@@ -1,0 +1,16 @@
+{
+  "name": "github-actions-ci-cd-delivery-pipeline",
+  "version": "1.0.0",
+  "description": "Production-style GitHub Actions CI/CD blueprint with commit quality, build, test and delivery stages.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "lint": "node --check src/pipelineStatus.js && node --check scripts/build.mjs && node --check scripts/deliver.mjs && node --check test/pipelineStatus.test.js",
+    "test": "node --test",
+    "build": "node scripts/build.mjs",
+    "deliver": "node scripts/deliver.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

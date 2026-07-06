@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="620" viewBox="0 0 1600 620" role="img" aria-labelledby="title desc">
+  <title id="title">GitHub Actions CI/CD Delivery Pipeline</title>
+  <desc id="desc">A GitHub Actions workflow runs commit quality checks, builds an artifact, tests the application and promotes the artifact to a delivery job.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb" />
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { fill: #0f172a; font: 700 34px Arial, sans-serif; }
+      .subtitle { fill: #475569; font: 400 18px Arial, sans-serif; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 10; }
+      .accent { fill: #eff6ff; stroke: #2563eb; stroke-width: 2.4; rx: 10; }
+      .success { fill: #ecfdf5; stroke: #059669; stroke-width: 2.4; rx: 10; }
+      .gate { fill: #fefce8; stroke: #ca8a04; stroke-width: 2.4; rx: 10; }
+      .label { fill: #0f172a; font: 700 22px Arial, sans-serif; text-anchor: middle; }
+      .detail { fill: #475569; font: 400 16px Arial, sans-serif; text-anchor: middle; }
+      .lane { fill: #d3dee9; font: 700 16px Arial, sans-serif; letter-spacing: .6px; text-anchor: middle; }
+      .arrow { stroke: #2563eb; stroke-width: 3.2; fill: none; marker-end: url(#arrow); }
+      .artifact { stroke: #059669; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1600" height="620" rx="24" />
+  <text class="title" x="70" y="78">GitHub Actions CI/CD Delivery Pipeline</text>
+  <text class="subtitle" x="70" y="112">Commit quality, build, test and delivery stages use explicit gates and reusable artifacts.</text>
+  <text class="lane" x="172" y="178">COMMIT</text>
+  <text class="lane" x="442" y="178">QUALITY</text>
+  <text class="lane" x="712" y="178">BUILD</text>
+  <text class="lane" x="982" y="178">TEST</text>
+  <text class="lane" x="1252" y="178">DELIVERY</text>
+  <rect class="box" x="70" y="220" width="205" height="140" />
+  <text class="label" x="172" y="270">Pull Request</text>
+  <text class="label" x="172" y="300">or Push</text>
+  <text class="detail" x="172" y="332">Source change</text>
+  <rect class="accent" x="340" y="220" width="205" height="140" />
+  <text class="label" x="442" y="270">Commit</text>
+  <text class="label" x="442" y="300">Quality</text>
+  <text class="detail" x="442" y="332">Lint and Trunk scan</text>
+  <rect class="accent" x="610" y="220" width="205" height="140" />
+  <text class="label" x="712" y="270">Build</text>
+  <text class="label" x="712" y="300">Artifact</text>
+  <text class="detail" x="712" y="332">Versioned dist output</text>
+  <rect class="success" x="880" y="220" width="205" height="140" />
+  <text class="label" x="982" y="270">Automated</text>
+  <text class="label" x="982" y="300">Tests</text>
+  <text class="detail" x="982" y="332">Node test runner</text>
+  <rect class="gate" x="1150" y="220" width="205" height="140" />
+  <text class="label" x="1252" y="270">Delivery</text>
+  <text class="label" x="1252" y="300">Staging</text>
+  <text class="detail" x="1252" y="332">Environment gate</text>
+  <rect class="box" x="610" y="438" width="475" height="76" />
+  <text class="detail" x="848" y="468">Artifact upload and download keeps delivery tied</text>
+  <text class="detail" x="848" y="492">to the exact build that passed validation.</text>
+  <rect class="box" x="1130" y="430" width="245" height="94" />
+  <text class="detail" x="1252" y="462">Delivery manifest</text>
+  <text class="detail" x="1252" y="486">records artifact</text>
+  <text class="detail" x="1252" y="510">and environment.</text>
+  <path class="arrow" d="M275 290 H330" />
+  <path class="arrow" d="M545 290 H600" />
+  <path class="arrow" d="M815 290 H870" />
+  <path class="arrow" d="M1085 290 H1140" />
+  <path class="arrow artifact" d="M712 360 V426" />
+  <path class="arrow artifact" d="M1085 476 H1120" />
+  <path class="arrow" d="M1252 360 V418" />
+</svg>
