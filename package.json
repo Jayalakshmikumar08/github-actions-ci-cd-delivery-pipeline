@@ -5,10 +5,9 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "lint": "node --check src/pipelineStatus.js && node --check scripts/build.mjs && node --check scripts/deliver.mjs && node --check test/pipelineStatus.test.js",
-    "test": "node --test",
-    "build": "node scripts/build.mjs",
-    "deliver": "node scripts/deliver.mjs"
+    "start": "node src/server.js",
+    "lint": "node --check src/pipelineStatus.js && node --check src/server.js && node --check test/pipelineStatus.test.js && node --check test/server.test.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"

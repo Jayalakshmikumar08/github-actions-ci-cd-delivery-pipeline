@@ -1,0 +1,154 @@
+name: Deploy App Service blue/green stage
+description: Publish one promoted image and deploy it through a verified staging-slot swap
+
+inputs:
+  stage:
+    description: Lifecycle stage displayed by the application
+    required: true
+  artifact-name:
+    description: Build-once release artifact
+    required: false
+    default: ""
+  image-ref:
+    description: Existing immutable ACR digest promoted from an earlier stage
+    required: false
+    default: ""
+  azure-credentials:
+    description: Environment-scoped Azure client-secret credential JSON
+    required: true
+  azure-resource-group:
+    description: Shared App Service platform resource group
+    required: true
+
+outputs:
+  image-ref:
+    description: Immutable ACR digest used for this stage
+    value: ${{ inputs.image-ref || steps.publish.outputs.image-ref }}
+
+runs:
+  using: composite
+  steps:
+    - name: Sign in to Azure with the environment client secret
+      uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
+      with:
+        creds: ${{ inputs.azure-credentials }}
+
+    - name: Publish immutable stage image
+      if: inputs.image-ref == ''
+      id: publish
+      uses: ./.github/actions/publish-image
+      with:
+        artifact-name: ${{ inputs.artifact-name }}
+        azure-resource-group: ${{ inputs.azure-resource-group }}
+
+    - name: Deploy with slot preview, verification and rollback
+      shell: bash
+      env:
+        AZURE_CORE_OUTPUT: none
+        AZURE_RESOURCE_GROUP: ${{ inputs.azure-resource-group }}
+        IMAGE_REF: ${{ inputs.image-ref || steps.publish.outputs.image-ref }}
+        RELEASE_SHA: ${{ github.sha }}
+        DEPLOYMENT_STAGE: ${{ inputs.stage }}
+      run: |
+        set -Eeuo pipefail
+        slot=staging
+        preview_active=false
+        swap_completed=false
+        APP_SERVICE_NAME="$(az webapp list \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --query "[?tags.strategy=='blue-green' && tags.environment=='${DEPLOYMENT_STAGE}'].name | [0]" \
+          --output tsv)"
+        test -n "$APP_SERVICE_NAME"
+
+        verify_release() {
+          local url="$1"
+          for attempt in {1..30}; do
+            body="$(curl --fail --silent --show-error --max-time 10 \
+              "${url%/}/health/ready" 2>/dev/null || true)"
+            if jq -e --arg sha "${RELEASE_SHA:0:12}" \
+              '.status == "ready" and .releaseSha == $sha' \
+              <<<"$body" >/dev/null 2>&1; then
+              return 0
+            fi
+            echo "Waiting for ${url} (${attempt}/30)."
+            sleep 10
+          done
+          return 1
+        }
+
+        rollback() {
+          exit_code=$?
+          if [[ "$swap_completed" == "true" ]]; then
+            echo "::warning::Verification failed; swapping the last known good release back."
+            az webapp deployment slot swap \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name "$APP_SERVICE_NAME" \
+              --slot "$slot" \
+              --target-slot production \
+              --action swap || true
+          elif [[ "$preview_active" == "true" ]]; then
+            echo "::warning::Verification failed; resetting the slot-swap preview."
+            az webapp deployment slot swap \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name "$APP_SERVICE_NAME" \
+              --slot "$slot" \
+              --target-slot production \
+              --action reset || true
+          fi
+          exit "$exit_code"
+        }
+        trap rollback ERR
+
+        az webapp config container set \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$APP_SERVICE_NAME" \
+          --slot "$slot" \
+          --container-image-name "$IMAGE_REF"
+        az webapp config appsettings set \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$APP_SERVICE_NAME" \
+          --slot "$slot" \
+          --settings \
+            "RELEASE_SHA=$RELEASE_SHA" \
+            "DEPLOYMENT_STRATEGY=blue-green" \
+            "DEPLOYMENT_STAGE=$DEPLOYMENT_STAGE" \
+            PORT=8080 \
+            WEBSITES_PORT=8080
+        az webapp restart \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$APP_SERVICE_NAME" \
+          --slot "$slot"
+
+        slot_host="$(az webapp show \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$APP_SERVICE_NAME" \
+          --slot "$slot" \
+          --query defaultHostName --output tsv)"
+        verify_release "https://${slot_host}"
+
+        az webapp deployment slot swap \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$APP_SERVICE_NAME" \
+          --slot "$slot" \
+          --target-slot production \
+          --action preview
+        preview_active=true
+        verify_release "https://${slot_host}"
+
+        az webapp deployment slot swap \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$APP_SERVICE_NAME" \
+          --slot "$slot" \
+          --target-slot production \
+          --action swap
+        preview_active=false
+        swap_completed=true
+
+        production_host="$(az webapp show \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$APP_SERVICE_NAME" \
+          --query defaultHostName --output tsv)"
+        verify_release "https://${production_host}"
+        echo "Public application URL: https://${production_host}" >> "$GITHUB_STEP_SUMMARY"
+        swap_completed=false
+        trap - ERR

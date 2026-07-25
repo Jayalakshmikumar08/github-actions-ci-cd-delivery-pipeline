@@ -1,0 +1,187 @@
+name: Deploy one infrastructure stage
+description: Compile, validate, preview and optionally apply one subscription-scope Bicep entry point
+
+inputs:
+  platform:
+    description: Platform and phase identifier used in the Azure deployment name
+    required: true
+  template:
+    description: Subscription-scope Bicep entry point
+    required: true
+  stage:
+    description: Lifecycle stage
+    required: true
+  apply:
+    description: Whether to apply after validation and what-if
+    required: true
+  azure-client-id:
+    description: Azure OIDC client ID
+    required: true
+  azure-tenant-id:
+    description: Azure tenant ID
+    required: true
+  azure-subscription-id:
+    description: Azure subscription ID
+    required: true
+  azure-location:
+    description: Azure deployment and resource location
+    required: true
+  azure-resource-group:
+    description: Resource group created by Bicep
+    required: true
+  azure-resource-prefix:
+    description: Lowercase alphanumeric resource prefix
+    required: true
+  azure-deployment-profile:
+    description: Cost and resilience profile (developer or production)
+    required: false
+    default: developer
+  deployment-principal-object-id:
+    description: Object ID of the application-delivery principal
+    required: true
+  publisher-principal-object-id:
+    description: Object ID of the infrastructure identity that publishes the first private image
+    required: false
+    default: ""
+  image-reference:
+    description: Immutable image reference in the platform private ACR
+    required: false
+    default: ""
+  release-sha:
+    description: Full Git commit SHA represented by the private image
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Require an applied commit from main
+      if: inputs.apply == 'true'
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        git fetch --no-tags origin main:refs/remotes/origin/main
+        git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+
+    - name: Sign in to Azure with OIDC
+      uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Compile, validate and preview
+      shell: bash
+      env:
+        AZURE_CORE_OUTPUT: none
+        APPLY: ${{ inputs.apply }}
+        TEMPLATE: ${{ inputs.template }}
+        STAGE: ${{ inputs.stage }}
+        AZURE_LOCATION: ${{ inputs.azure-location }}
+        AZURE_RESOURCE_GROUP: ${{ inputs.azure-resource-group }}
+        AZURE_RESOURCE_PREFIX: ${{ inputs.azure-resource-prefix }}
+        AZURE_DEPLOYMENT_PROFILE: ${{ inputs.azure-deployment-profile }}
+        DEPLOYMENT_PRINCIPAL_OBJECT_ID: ${{ inputs.deployment-principal-object-id }}
+        PUBLISHER_PRINCIPAL_OBJECT_ID: ${{ inputs.publisher-principal-object-id }}
+        IMAGE_REFERENCE: ${{ inputs.image-reference }}
+        RELEASE_SHA: ${{ inputs.release-sha }}
+      run: |
+        set -Eeuo pipefail
+        shopt -s nocasematch
+        [[ "$AZURE_DEPLOYMENT_PROFILE" =~ ^(developer|production)$ ]]
+        [[ "$AZURE_RESOURCE_PREFIX" =~ ^[a-z0-9]{3,12}$ ]]
+        [[ "$STAGE" =~ ^(dev|test|preprod|prod)$ ]]
+        guid_pattern='^[a-f0-9]{8}-[a-f0-9]{4}-[1-5a-f0-9][a-f0-9]{3}-[89ab0-9a-f][a-f0-9]{3}-[a-f0-9]{12}$'
+        [[ "$DEPLOYMENT_PRINCIPAL_OBJECT_ID" =~ $guid_pattern ]]
+        grep -q "targetScope = 'subscription'" "$TEMPLATE"
+
+        AZURE_CLI_VERSION="$(az version --query '"azure-cli"' --output tsv)"
+        [[ "$(printf '%s\n' "2.76.0" "$AZURE_CLI_VERSION" |
+          sort --version-sort |
+          head --lines 1)" == "2.76.0" ]]
+
+        compiled_template="$(mktemp)"
+        trap 'rm -f "$compiled_template"' EXIT
+        az bicep build --file "$TEMPLATE" --outfile "$compiled_template"
+
+        parameters=(
+          "prefix=${AZURE_RESOURCE_PREFIX}"
+          "stage=${STAGE}"
+          "location=${AZURE_LOCATION}"
+          "resourceGroupName=${AZURE_RESOURCE_GROUP}"
+          "deploymentPrincipalObjectId=${DEPLOYMENT_PRINCIPAL_OBJECT_ID}"
+          "deploymentProfile=${AZURE_DEPLOYMENT_PROFILE}"
+        )
+        if jq -e '.parameters | has("publisherPrincipalObjectId")' "$compiled_template" >/dev/null; then
+          [[ "$PUBLISHER_PRINCIPAL_OBJECT_ID" =~ $guid_pattern ]]
+          parameters+=("publisherPrincipalObjectId=${PUBLISHER_PRINCIPAL_OBJECT_ID}")
+        fi
+        if jq -e '.parameters | has("imageReference")' "$compiled_template" >/dev/null; then
+          [[ "$IMAGE_REFERENCE" =~ ^[a-z0-9]+\.azurecr\.io/delivery-demo@sha256:[a-f0-9]{64}$ ]]
+          [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          parameters+=(
+            "imageReference=${IMAGE_REFERENCE}"
+            "releaseSha=${RELEASE_SHA}"
+          )
+        fi
+
+        validation_level=Provider
+        if [[ "$APPLY" != "true" ]]; then
+          validation_level=ProviderNoRbac
+        fi
+        az deployment sub validate \
+          --location "$AZURE_LOCATION" \
+          --template-file "$TEMPLATE" \
+          --parameters "${parameters[@]}" \
+          --validation-level "$validation_level"
+        az deployment sub what-if \
+          --location "$AZURE_LOCATION" \
+          --template-file "$TEMPLATE" \
+          --parameters "${parameters[@]}" \
+          --validation-level "$validation_level" \
+          --no-pretty-print
+
+    - name: Apply Bicep deployment
+      if: inputs.apply == 'true'
+      shell: bash
+      env:
+        AZURE_CORE_OUTPUT: none
+        TEMPLATE: ${{ inputs.template }}
+        PLATFORM: ${{ inputs.platform }}
+        STAGE: ${{ inputs.stage }}
+        AZURE_LOCATION: ${{ inputs.azure-location }}
+        AZURE_RESOURCE_GROUP: ${{ inputs.azure-resource-group }}
+        AZURE_RESOURCE_PREFIX: ${{ inputs.azure-resource-prefix }}
+        AZURE_DEPLOYMENT_PROFILE: ${{ inputs.azure-deployment-profile }}
+        DEPLOYMENT_PRINCIPAL_OBJECT_ID: ${{ inputs.deployment-principal-object-id }}
+        PUBLISHER_PRINCIPAL_OBJECT_ID: ${{ inputs.publisher-principal-object-id }}
+        IMAGE_REFERENCE: ${{ inputs.image-reference }}
+        RELEASE_SHA: ${{ inputs.release-sha }}
+      run: |
+        set -Eeuo pipefail
+        compiled_template="$(mktemp)"
+        trap 'rm -f "$compiled_template"' EXIT
+        az bicep build --file "$TEMPLATE" --outfile "$compiled_template"
+        parameters=(
+          "prefix=${AZURE_RESOURCE_PREFIX}"
+          "stage=${STAGE}"
+          "location=${AZURE_LOCATION}"
+          "resourceGroupName=${AZURE_RESOURCE_GROUP}"
+          "deploymentPrincipalObjectId=${DEPLOYMENT_PRINCIPAL_OBJECT_ID}"
+          "deploymentProfile=${AZURE_DEPLOYMENT_PROFILE}"
+        )
+        if jq -e '.parameters | has("publisherPrincipalObjectId")' "$compiled_template" >/dev/null; then
+          parameters+=("publisherPrincipalObjectId=${PUBLISHER_PRINCIPAL_OBJECT_ID}")
+        fi
+        if jq -e '.parameters | has("imageReference")' "$compiled_template" >/dev/null; then
+          parameters+=(
+            "imageReference=${IMAGE_REFERENCE}"
+            "releaseSha=${RELEASE_SHA}"
+          )
+        fi
+
+        az deployment sub create \
+          --name "${PLATFORM}-${STAGE}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+          --location "$AZURE_LOCATION" \
+          --template-file "$TEMPLATE" \
+          --parameters "${parameters[@]}"

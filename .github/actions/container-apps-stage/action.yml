@@ -1,0 +1,269 @@
+name: Deploy Container Apps canary stage
+description: Publish one promoted image and shift revision traffic through SLO-gated canary steps
+
+inputs:
+  stage:
+    description: Lifecycle stage displayed by the application
+    required: true
+  artifact-name:
+    description: Build-once release artifact
+    required: false
+    default: ""
+  image-ref:
+    description: Existing immutable ACR digest promoted from an earlier stage
+    required: false
+    default: ""
+  azure-client-id:
+    description: Environment-specific OIDC client ID
+    required: true
+  azure-tenant-id:
+    description: Azure tenant ID
+    required: true
+  azure-subscription-id:
+    description: Azure subscription ID
+    required: true
+  azure-resource-group:
+    description: Shared Container Apps platform resource group
+    required: true
+  canary-observation-seconds:
+    description: Observation time at each traffic weight
+    required: false
+    default: "120"
+  canary-metric-delay-seconds:
+    description: Azure Monitor ingestion delay
+    required: false
+    default: "60"
+  canary-min-requests:
+    description: Minimum request sample required to promote
+    required: false
+    default: "20"
+  canary-max-error-percent:
+    description: Maximum permitted 5xx percentage
+    required: false
+    default: "1"
+
+outputs:
+  image-ref:
+    description: Immutable ACR digest used for this stage
+    value: ${{ inputs.image-ref || steps.publish.outputs.image-ref }}
+
+runs:
+  using: composite
+  steps:
+    - name: Sign in to Azure with OIDC
+      uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Install pinned Container Apps CLI extension
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        az extension add \
+          --name containerapp \
+          --version 0.3.55 \
+          --allow-preview true \
+          --yes
+        [[ "$(az extension show \
+          --name containerapp \
+          --query version \
+          --output tsv)" == "0.3.55" ]]
+
+    - name: Publish immutable stage image
+      if: inputs.image-ref == ''
+      id: publish
+      uses: ./.github/actions/publish-image
+      with:
+        artifact-name: ${{ inputs.artifact-name }}
+        azure-resource-group: ${{ inputs.azure-resource-group }}
+
+    - name: Deploy canary with automatic rollback
+      shell: bash
+      env:
+        AZURE_CORE_OUTPUT: none
+        AZURE_RESOURCE_GROUP: ${{ inputs.azure-resource-group }}
+        IMAGE_REF: ${{ inputs.image-ref || steps.publish.outputs.image-ref }}
+        RELEASE_SHA: ${{ github.sha }}
+        DEPLOYMENT_STAGE: ${{ inputs.stage }}
+        CANARY_OBSERVATION_SECONDS: ${{ inputs.canary-observation-seconds }}
+        CANARY_METRIC_DELAY_SECONDS: ${{ inputs.canary-metric-delay-seconds }}
+        CANARY_MIN_REQUESTS: ${{ inputs.canary-min-requests }}
+        CANARY_MAX_ERROR_PERCENT: ${{ inputs.canary-max-error-percent }}
+      run: |
+        set -Eeuo pipefail
+        [[ "$CANARY_OBSERVATION_SECONDS" =~ ^[0-9]+$ ]]
+        [[ "$CANARY_METRIC_DELAY_SECONDS" =~ ^[0-9]+$ ]]
+        [[ "$CANARY_MIN_REQUESTS" =~ ^[1-9][0-9]*$ ]]
+        ((CANARY_OBSERVATION_SECONDS <= 3600))
+        ((CANARY_METRIC_DELAY_SECONDS <= 900))
+        ((CANARY_MIN_REQUESTS <= 10000))
+        jq -en --arg value "$CANARY_MAX_ERROR_PERCENT" \
+          '($value | tonumber) >= 0 and ($value | tonumber) <= 100' >/dev/null
+        revision_suffix="c${RELEASE_SHA:0:8}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        candidate_label="candidate-${RELEASE_SHA:0:8}-${GITHUB_RUN_ID}"
+        new_revision=""
+        CONTAINER_APP_NAME="$(az containerapp list \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --query "[?tags.strategy=='canary' && tags.environment=='${DEPLOYMENT_STAGE}'].name | [0]" \
+          --output tsv)"
+        test -n "$CONTAINER_APP_NAME"
+
+        verify_release() {
+          local url="$1"
+          for attempt in {1..24}; do
+            body="$(curl --fail --silent --show-error --max-time 10 \
+              "${url%/}/health/ready" 2>/dev/null || true)"
+            if jq -e --arg sha "${RELEASE_SHA:0:12}" \
+              '.status == "ready" and .releaseSha == $sha' \
+              <<<"$body" >/dev/null 2>&1; then
+              return 0
+            fi
+            echo "Waiting for ${url} (${attempt}/24)."
+            sleep 5
+          done
+          return 1
+        }
+
+        metric_total() {
+          local start_time="$1"
+          local filter="$2"
+          az monitor metrics list \
+            --resource "$app_resource_id" \
+            --metric Requests \
+            --interval PT1M \
+            --aggregation Total \
+            --start-time "$start_time" \
+            --filter "$filter" \
+            --output json |
+            jq '[.value[0]?.timeseries[]?.data[]?.total // 0] | add // 0'
+        }
+
+        enforce_slo_gate() {
+          local start_time="$1"
+          local total errors
+          total="$(metric_total "$start_time" \
+            "revisionName eq '$new_revision'")"
+          errors="$(metric_total "$start_time" \
+            "revisionName eq '$new_revision' and statusCodeCategory eq '5xx'")"
+          echo "Canary metrics: requests=${total}, 5xx=${errors}."
+          jq -en \
+            --argjson total "$total" \
+            --argjson errors "$errors" \
+            --argjson minimum "$CANARY_MIN_REQUESTS" \
+            --argjson maximum "$CANARY_MAX_ERROR_PERCENT" \
+            'if $total < $minimum then false else (($errors * 100 / $total) <= $maximum) end' \
+            >/dev/null
+        }
+
+        generate_canary_sample() {
+          local request
+          for ((request = 1; request <= CANARY_MIN_REQUESTS; request++)); do
+            curl --fail --silent --show-error --max-time 10 \
+              "${candidate_url%/}/deployment" >/dev/null
+          done
+        }
+
+        az containerapp revision set-mode \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$CONTAINER_APP_NAME" \
+          --mode multiple
+        stable_revision="$(az containerapp ingress traffic show \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$CONTAINER_APP_NAME" \
+          --query "sort_by([?weight > \`0\`], &weight)[-1].revisionName" \
+          --output tsv)"
+        test -n "$stable_revision"
+
+        az containerapp ingress traffic set \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$CONTAINER_APP_NAME" \
+          --revision-weight "${stable_revision}=100"
+
+        rollback() {
+          exit_code=$?
+          echo "::warning::Canary failed; restoring all traffic to ${stable_revision}."
+          az containerapp ingress traffic set \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$CONTAINER_APP_NAME" \
+            --revision-weight "${stable_revision}=100" || true
+          if [[ -n "$new_revision" ]]; then
+            az containerapp revision deactivate \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name "$CONTAINER_APP_NAME" \
+              --revision "$new_revision" || true
+          fi
+          exit "$exit_code"
+        }
+        trap rollback ERR
+
+        new_revision="$(az containerapp update \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$CONTAINER_APP_NAME" \
+          --image "$IMAGE_REF" \
+          --revision-suffix "$revision_suffix" \
+          --set-env-vars \
+            "RELEASE_SHA=$RELEASE_SHA" \
+            "DEPLOYMENT_STRATEGY=canary" \
+            "DEPLOYMENT_STAGE=$DEPLOYMENT_STAGE" \
+          --query properties.latestRevisionName \
+          --output tsv)"
+        test -n "$new_revision"
+
+        for attempt in {1..30}; do
+          state="$(az containerapp revision show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$CONTAINER_APP_NAME" \
+            --revision "$new_revision" \
+            --query properties.runningState --output tsv)"
+          [[ "$state" == "Running" ]] && break
+          [[ "$state" != "Failed" && "$state" != "Degraded" ]]
+          sleep 10
+        done
+        [[ "$state" == "Running" ]]
+
+        az containerapp revision label add \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$CONTAINER_APP_NAME" \
+          --revision "$new_revision" \
+          --label "$candidate_label"
+        app_fqdn="$(az containerapp show \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$CONTAINER_APP_NAME" \
+          --query properties.configuration.ingress.fqdn --output tsv)"
+        app_resource_id="$(az containerapp show \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$CONTAINER_APP_NAME" \
+          --query id --output tsv)"
+        candidate_url="https://${candidate_label}---${app_fqdn}"
+        verify_release "$candidate_url"
+
+        for candidate_weight in 5 25 50 100; do
+          stable_weight=$((100 - candidate_weight))
+          stage_start="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
+          az containerapp ingress traffic set \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$CONTAINER_APP_NAME" \
+            --revision-weight \
+              "${stable_revision}=${stable_weight}" \
+              "${new_revision}=${candidate_weight}"
+          verify_release "$candidate_url"
+          generate_canary_sample
+          sleep "$CANARY_OBSERVATION_SECONDS"
+          state="$(az containerapp revision show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$CONTAINER_APP_NAME" \
+            --revision "$new_revision" \
+            --query properties.runningState --output tsv)"
+          [[ "$state" == "Running" ]]
+          sleep "$CANARY_METRIC_DELAY_SECONDS"
+          enforce_slo_gate "$stage_start"
+        done
+
+        trap - ERR
+        az containerapp revision deactivate \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$CONTAINER_APP_NAME" \
+          --revision "$stable_revision"
+        echo "Public application URL: https://${app_fqdn}" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,228 @@
+name: Reconcile one infrastructure platform stage
+description: Route preview or deployment through the selected platform implementation
+
+inputs:
+  platform:
+    description: Platform identifier (app-service, container-apps, or aks)
+    required: true
+  stage:
+    description: Lifecycle stage
+    required: true
+  apply:
+    description: Whether to apply after validation and what-if
+    required: true
+  artifact-name:
+    description: Build-once image artifact required for private-ACR bootstrap
+    required: false
+    default: ""
+  azure-client-id:
+    description: Infrastructure OIDC client ID
+    required: true
+  azure-tenant-id:
+    description: Azure tenant ID
+    required: true
+  azure-subscription-id:
+    description: Azure subscription ID
+    required: true
+  azure-location:
+    description: Azure resource location
+    required: true
+  azure-resource-group:
+    description: Platform resource group
+    required: true
+  azure-resource-prefix:
+    description: Lowercase alphanumeric resource prefix
+    required: true
+  azure-deployment-profile:
+    description: Cost and resilience profile
+    required: false
+    default: developer
+  deployment-principal-object-id:
+    description: Application-delivery principal object ID
+    required: true
+  publisher-principal-object-id:
+    description: Infrastructure publisher principal object ID
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Validate platform inputs
+      shell: bash
+      env:
+        PLATFORM: ${{ inputs.platform }}
+        APPLY: ${{ inputs.apply }}
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      run: |
+        set -Eeuo pipefail
+        [[ "$PLATFORM" =~ ^(app-service|container-apps|aks)$ ]]
+        [[ "$APPLY" =~ ^(true|false)$ ]]
+        if [[ "$APPLY" == "true" && "$PLATFORM" != "aks" ]]; then
+          test -n "$ARTIFACT_NAME"
+        fi
+
+    - name: Sign in for App Service capacity preflight
+      if: inputs.platform == 'app-service'
+      uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Check App Service regional and P0v4 capacity
+      if: inputs.platform == 'app-service'
+      id: app-service-capacity
+      shell: bash
+      env:
+        AZURE_LOCATION: ${{ inputs.azure-location }}
+        AZURE_SUBSCRIPTION_ID: ${{ inputs.azure-subscription-id }}
+        AZURE_DEPLOYMENT_PROFILE: ${{ inputs.azure-deployment-profile }}
+      run: |
+        set -Eeuo pipefail
+        [[ "$AZURE_DEPLOYMENT_PROFILE" =~ ^(developer|production)$ ]]
+        if [[ "$AZURE_DEPLOYMENT_PROFILE" == "production" ]]; then
+          app_service_sku=P0v3
+        else
+          app_service_sku=P0v4
+        fi
+        usage="$(az rest \
+          --method get \
+          --url "https://management.azure.com/subscriptions/${AZURE_SUBSCRIPTION_ID}/providers/Microsoft.Web/locations/${AZURE_LOCATION}/usages?api-version=2025-05-01" \
+          --output json)"
+        regional_limit="$(jq -r \
+          '[.value[] | select(.name.value == "*") | .limit][0] // 0' \
+          <<<"$usage")"
+        sku_limit="$(jq -r --arg sku "$app_service_sku" \
+          '[.value[] | select(.name.value == $sku) | .limit][0] // 0' \
+          <<<"$usage")"
+        [[ "$regional_limit" =~ ^[0-9]+$ ]]
+        [[ "$sku_limit" =~ ^[0-9]+$ ]]
+
+        if ((regional_limit < 1 || sku_limit < 1)); then
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::App Service skipped: ${AZURE_LOCATION} Total Regional VMs=${regional_limit}, ${app_service_sku}=${sku_limit}; both require at least 1."
+          {
+            echo "### App Service blocked by pending Azure capacity"
+            echo
+            echo "- Region: \`${AZURE_LOCATION}\`"
+            echo "- Microsoft.Web Total Regional VMs: \`${regional_limit}\`"
+            echo "- ${app_service_sku} instances: \`${sku_limit}\`"
+            echo "- Required: at least \`1\` for both"
+            echo
+            echo "This App Service stage was a successful no-op. No App Service resources were created."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        echo "ready=true" >> "$GITHUB_OUTPUT"
+
+    - name: Preview App Service foundation
+      if: >-
+        inputs.platform == 'app-service' &&
+        inputs.apply != 'true' &&
+        steps.app-service-capacity.outputs.ready == 'true'
+      uses: ./.github/actions/infra-stage
+      with:
+        platform: app-service-foundation
+        template: infra/app-service/main.bicep
+        stage: ${{ inputs.stage }}
+        apply: "false"
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}
+        azure-location: ${{ inputs.azure-location }}
+        azure-resource-group: ${{ inputs.azure-resource-group }}
+        azure-resource-prefix: ${{ inputs.azure-resource-prefix }}
+        azure-deployment-profile: ${{ inputs.azure-deployment-profile }}
+        deployment-principal-object-id: ${{ inputs.deployment-principal-object-id }}
+        publisher-principal-object-id: ${{ inputs.publisher-principal-object-id }}
+
+    - name: Compile App Service workload phase
+      if: >-
+        inputs.platform == 'app-service' &&
+        inputs.apply != 'true' &&
+        steps.app-service-capacity.outputs.ready == 'true'
+      shell: bash
+      run: az bicep build --file infra/app-service/workload-main.bicep --stdout >/dev/null
+
+    - name: Deploy App Service private-ACR platform
+      if: >-
+        inputs.platform == 'app-service' &&
+        inputs.apply == 'true' &&
+        steps.app-service-capacity.outputs.ready == 'true'
+      uses: ./.github/actions/private-acr-infra-stage
+      with:
+        platform: app-service
+        foundation-template: infra/app-service/main.bicep
+        workload-template: infra/app-service/workload-main.bicep
+        stage: ${{ inputs.stage }}
+        artifact-name: ${{ inputs.artifact-name }}
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}
+        azure-location: ${{ inputs.azure-location }}
+        azure-resource-group: ${{ inputs.azure-resource-group }}
+        azure-resource-prefix: ${{ inputs.azure-resource-prefix }}
+        azure-deployment-profile: ${{ inputs.azure-deployment-profile }}
+        deployment-principal-object-id: ${{ inputs.deployment-principal-object-id }}
+        publisher-principal-object-id: ${{ inputs.publisher-principal-object-id }}
+
+    - name: Preview Container Apps foundation
+      if: inputs.platform == 'container-apps' && inputs.apply != 'true'
+      uses: ./.github/actions/infra-stage
+      with:
+        platform: container-apps-foundation
+        template: infra/container-apps/main.bicep
+        stage: ${{ inputs.stage }}
+        apply: "false"
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}
+        azure-location: ${{ inputs.azure-location }}
+        azure-resource-group: ${{ inputs.azure-resource-group }}
+        azure-resource-prefix: ${{ inputs.azure-resource-prefix }}
+        azure-deployment-profile: ${{ inputs.azure-deployment-profile }}
+        deployment-principal-object-id: ${{ inputs.deployment-principal-object-id }}
+        publisher-principal-object-id: ${{ inputs.publisher-principal-object-id }}
+
+    - name: Compile Container Apps workload phase
+      if: inputs.platform == 'container-apps' && inputs.apply != 'true'
+      shell: bash
+      run: az bicep build --file infra/container-apps/workload-main.bicep --stdout >/dev/null
+
+    - name: Deploy Container Apps private-ACR platform
+      if: inputs.platform == 'container-apps' && inputs.apply == 'true'
+      uses: ./.github/actions/private-acr-infra-stage
+      with:
+        platform: container-apps
+        foundation-template: infra/container-apps/main.bicep
+        workload-template: infra/container-apps/workload-main.bicep
+        stage: ${{ inputs.stage }}
+        artifact-name: ${{ inputs.artifact-name }}
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}
+        azure-location: ${{ inputs.azure-location }}
+        azure-resource-group: ${{ inputs.azure-resource-group }}
+        azure-resource-prefix: ${{ inputs.azure-resource-prefix }}
+        azure-deployment-profile: ${{ inputs.azure-deployment-profile }}
+        deployment-principal-object-id: ${{ inputs.deployment-principal-object-id }}
+        publisher-principal-object-id: ${{ inputs.publisher-principal-object-id }}
+
+    - name: Preview or deploy AKS
+      if: inputs.platform == 'aks'
+      uses: ./.github/actions/infra-stage
+      with:
+        platform: aks
+        template: infra/aks/main.bicep
+        stage: ${{ inputs.stage }}
+        apply: ${{ inputs.apply }}
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}
+        azure-location: ${{ inputs.azure-location }}
+        azure-resource-group: ${{ inputs.azure-resource-group }}
+        azure-resource-prefix: ${{ inputs.azure-resource-prefix }}
+        azure-deployment-profile: ${{ inputs.azure-deployment-profile }}
+        deployment-principal-object-id: ${{ inputs.deployment-principal-object-id }}

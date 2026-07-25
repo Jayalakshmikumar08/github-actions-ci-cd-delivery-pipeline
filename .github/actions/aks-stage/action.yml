@@ -1,0 +1,223 @@
+name: Deploy AKS rolling stage
+description: Publish one promoted image and perform a controlled Kubernetes rolling update
+
+inputs:
+  stage:
+    description: Lifecycle stage displayed by the application
+    required: true
+  artifact-name:
+    description: Build-once release artifact
+    required: false
+    default: ""
+  image-ref:
+    description: Existing immutable ACR digest promoted from an earlier stage
+    required: false
+    default: ""
+  azure-client-id:
+    description: Environment-specific OIDC client ID
+    required: true
+  azure-tenant-id:
+    description: Azure tenant ID
+    required: true
+  azure-subscription-id:
+    description: Azure subscription ID
+    required: true
+  azure-resource-group:
+    description: Shared AKS platform resource group
+    required: true
+  azure-deployment-profile:
+    description: Workload cost and resilience profile (developer or production)
+    required: false
+    default: developer
+
+outputs:
+  image-ref:
+    description: Immutable ACR digest used for this stage
+    value: ${{ inputs.image-ref || steps.publish.outputs.image-ref }}
+
+runs:
+  using: composite
+  steps:
+    - name: Sign in to Azure with OIDC
+      uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Verify AKS deployment profile
+      id: cluster
+      shell: bash
+      env:
+        AZURE_CORE_OUTPUT: none
+        AZURE_RESOURCE_GROUP: ${{ inputs.azure-resource-group }}
+        AZURE_DEPLOYMENT_PROFILE: ${{ inputs.azure-deployment-profile }}
+      run: |
+        set -Eeuo pipefail
+        [[ "$AZURE_DEPLOYMENT_PROFILE" =~ ^(developer|production)$ ]]
+        AKS_CLUSTER_JSON="$(az aks list \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --query "[?tags.strategy=='rolling'] | [0].{name:name,profile:tags.profile}" \
+          --output json)"
+        AKS_CLUSTER_NAME="$(jq -r '.name // empty' <<<"$AKS_CLUSTER_JSON")"
+        AKS_CLUSTER_PROFILE="$(jq -r '.profile // empty' <<<"$AKS_CLUSTER_JSON")"
+        [[ "$AKS_CLUSTER_NAME" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]
+        if [[ "$AKS_CLUSTER_PROFILE" != "$AZURE_DEPLOYMENT_PROFILE" ]]; then
+          echo "::error::AKS profile '${AKS_CLUSTER_PROFILE:-missing}' does not match requested profile '$AZURE_DEPLOYMENT_PROFILE'."
+          exit 1
+        fi
+        echo "name=$AKS_CLUSTER_NAME" >> "$GITHUB_OUTPUT"
+
+    - name: Publish immutable stage image
+      if: inputs.image-ref == ''
+      id: publish
+      uses: ./.github/actions/publish-image
+      with:
+        artifact-name: ${{ inputs.artifact-name }}
+        azure-resource-group: ${{ inputs.azure-resource-group }}
+
+    - name: Install kubectl
+      uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+
+    - name: Install Helm
+      uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      with:
+        version: v3.20.2
+
+    - name: Install kubelogin
+      uses: azure/use-kubelogin@76597ae0fcbaace21b05e13a2cbf8daee2c6e820 # v1
+      with:
+        kubelogin-version: v0.2.10
+
+    - name: Deploy controlled rolling update
+      shell: bash
+      env:
+        AZURE_CORE_OUTPUT: none
+        AZURE_RESOURCE_GROUP: ${{ inputs.azure-resource-group }}
+        AKS_CLUSTER_NAME: ${{ steps.cluster.outputs.name }}
+        HELM_RELEASE: delivery-demo
+        IMAGE_REF: ${{ inputs.image-ref || steps.publish.outputs.image-ref }}
+        RELEASE_SHA: ${{ github.sha }}
+        DEPLOYMENT_STAGE: ${{ inputs.stage }}
+        AZURE_DEPLOYMENT_PROFILE: ${{ inputs.azure-deployment-profile }}
+      run: |
+        set -Eeuo pipefail
+        [[ "$AZURE_DEPLOYMENT_PROFILE" =~ ^(developer|production)$ ]]
+        AKS_NAMESPACE="delivery-demo-${DEPLOYMENT_STAGE}"
+
+        az aks get-credentials \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$AKS_CLUSTER_NAME" \
+          --overwrite-existing
+        kubelogin convert-kubeconfig -l azurecli
+        kubectl get namespace "$AKS_NAMESPACE" >/dev/null
+        IMAGE_REPOSITORY="${IMAGE_REF%@*}"
+        IMAGE_DIGEST="${IMAGE_REF##*@}"
+        [[ "$IMAGE_REPOSITORY" =~ ^[a-z0-9]+\.azurecr\.io/delivery-demo$ ]]
+        [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+        SERVICE_TYPE=ClusterIP
+        if [[ "$DEPLOYMENT_STAGE" == "prod" ]]; then
+          SERVICE_TYPE=LoadBalancer
+        fi
+
+        helm_values=(
+          --set-string "image.repository=${IMAGE_REPOSITORY}"
+          --set-string "image.digest=${IMAGE_DIGEST}"
+          --set-string "deployment.releaseSha=${RELEASE_SHA}"
+          --set-string "deployment.stage=${DEPLOYMENT_STAGE}"
+          --set-string "service.type=${SERVICE_TYPE}"
+        )
+        if [[ "$AZURE_DEPLOYMENT_PROFILE" == "production" ]]; then
+          helm_values+=(
+            --set "replicaCount=4"
+            --set "podDisruptionBudget.enabled=true"
+            --set "podDisruptionBudget.minAvailable=3"
+            --set "autoscaling.minReplicas=4"
+            --set "autoscaling.maxReplicas=20"
+          )
+        else
+          helm_values+=(
+            --set "replicaCount=1"
+            --set "podDisruptionBudget.enabled=false"
+            --set "autoscaling.minReplicas=1"
+            --set "autoscaling.maxReplicas=2"
+          )
+        fi
+        helm lint deploy/aks/chart --strict "${helm_values[@]}"
+        helm template "$HELM_RELEASE" deploy/aks/chart \
+          --namespace "$AKS_NAMESPACE" "${helm_values[@]}" |
+          kubectl --namespace "$AKS_NAMESPACE" apply \
+            --server-side --dry-run=server \
+            --field-manager=github-actions -f - >/dev/null
+
+        previous_revision="$(helm list --namespace "$AKS_NAMESPACE" \
+          --filter "^${HELM_RELEASE}$" --output json |
+          jq -r '.[0].revision // empty')"
+        helm upgrade --install "$HELM_RELEASE" deploy/aks/chart \
+          --namespace "$AKS_NAMESPACE" \
+          --atomic --cleanup-on-fail --history-max 5 --timeout 10m \
+          "${helm_values[@]}"
+
+        port_forward_pid=""
+        rollback_after_validation() {
+          exit_code=$?
+          if [[ -n "$port_forward_pid" ]]; then
+            kill "$port_forward_pid" 2>/dev/null || true
+          fi
+          echo "::warning::Post-deployment validation failed; restoring the previous Helm release."
+          if [[ -n "$previous_revision" ]]; then
+            helm rollback "$HELM_RELEASE" "$previous_revision" \
+              --namespace "$AKS_NAMESPACE" --wait --timeout 10m || true
+          else
+            helm uninstall "$HELM_RELEASE" \
+              --namespace "$AKS_NAMESPACE" --wait --timeout 10m || true
+          fi
+          exit "$exit_code"
+        }
+        trap rollback_after_validation ERR
+
+        kubectl --namespace "$AKS_NAMESPACE" \
+          rollout status deployment/delivery-demo --timeout=10m
+        observed_image="$(kubectl --namespace "$AKS_NAMESPACE" \
+          get deployment delivery-demo \
+          --output jsonpath='{.spec.template.spec.containers[0].image}')"
+        [[ "$observed_image" == "$IMAGE_REF" ]]
+        unavailable="$(kubectl --namespace "$AKS_NAMESPACE" \
+          get deployment delivery-demo \
+          --output jsonpath='{.status.unavailableReplicas}')"
+        [[ -z "$unavailable" || "$unavailable" == "0" ]]
+
+        if [[ "$SERVICE_TYPE" == "LoadBalancer" ]]; then
+          external_address=""
+          for attempt in {1..60}; do
+            external_address="$(kubectl --namespace "$AKS_NAMESPACE" \
+              get service delivery-demo \
+              --output jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}')"
+            [[ -n "$external_address" ]] && break
+            echo "Waiting for the public AKS endpoint (${attempt}/60)."
+            sleep 10
+          done
+          test -n "$external_address"
+          application_url="http://${external_address}"
+        else
+          kubectl --namespace "$AKS_NAMESPACE" port-forward \
+            service/delivery-demo 18080:80 >port-forward.log 2>&1 &
+          port_forward_pid=$!
+          application_url="http://127.0.0.1:18080"
+        fi
+        body="$(curl --fail --silent --show-error --retry 12 \
+          --retry-all-errors --retry-delay 5 \
+          "${application_url}/health/ready")"
+        jq -e --arg sha "${RELEASE_SHA:0:12}" \
+          '.status == "ready" and .releaseSha == $sha' \
+          <<<"$body" >/dev/null
+        if [[ -n "$port_forward_pid" ]]; then
+          kill "$port_forward_pid" 2>/dev/null || true
+          wait "$port_forward_pid" 2>/dev/null || true
+          port_forward_pid=""
+          echo "Non-production readiness verified through authenticated kubectl port-forward." \
+            >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "Public application URL: ${application_url}" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        trap - ERR

@@ -1,65 +1,127 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="620" viewBox="0 0 1600 620" role="img" aria-labelledby="title desc">
-  <title id="title">GitHub Actions CI/CD Delivery Pipeline</title>
-  <desc id="desc">A GitHub Actions workflow runs commit quality checks, builds an artifact, tests the application and promotes the artifact to a delivery job.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900" role="img" aria-labelledby="title desc">
+  <title id="title">Azure multi-stage CI/CD architecture</title>
+  <desc id="desc">A protected feature branch and pull request feed quality gates. Separate Bicep and application pipelines progress through dev, test, preprod, approval, and production for App Service blue-green, Container Apps canary, and AKS rolling deployment while each platform reuses shared capacity.</desc>
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb" />
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071a2f" />
+      <stop offset="1" stop-color="#123b5d" />
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#00101f" flood-opacity=".35" />
+    </filter>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0 0 9 4.5 0 9Z" fill="#8fd3ff" />
     </marker>
     <style>
-      .bg { fill: #f8fafc; }
-      .title { fill: #0f172a; font: 700 34px Arial, sans-serif; }
-      .subtitle { fill: #475569; font: 400 18px Arial, sans-serif; }
-      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 10; }
-      .accent { fill: #eff6ff; stroke: #2563eb; stroke-width: 2.4; rx: 10; }
-      .success { fill: #ecfdf5; stroke: #059669; stroke-width: 2.4; rx: 10; }
-      .gate { fill: #fefce8; stroke: #ca8a04; stroke-width: 2.4; rx: 10; }
-      .label { fill: #0f172a; font: 700 22px Arial, sans-serif; text-anchor: middle; }
-      .detail { fill: #475569; font: 400 16px Arial, sans-serif; text-anchor: middle; }
-      .lane { fill: #d3dee9; font: 700 16px Arial, sans-serif; letter-spacing: .6px; text-anchor: middle; }
-      .arrow { stroke: #2563eb; stroke-width: 3.2; fill: none; marker-end: url(#arrow); }
-      .artifact { stroke: #059669; }
+      .title { fill: #fff; font: 700 32px "Segoe UI", Arial, sans-serif; }
+      .subtitle { fill: #b9dcf4; font: 16px "Segoe UI", Arial, sans-serif; }
+      .section { fill: #fff; font: 700 19px "Segoe UI", Arial, sans-serif; }
+      .box-title { fill: #09233b; font: 700 16px "Segoe UI", Arial, sans-serif; }
+      .box-copy { fill: #264860; font: 13px "Segoe UI", Arial, sans-serif; }
+      .stage { fill: #0d2c47; font: 700 15px "Segoe UI", Arial, sans-serif; }
+      .small { fill: #c6e4f7; font: 12px "Segoe UI", Arial, sans-serif; }
+      .line { fill: none; stroke: #8fd3ff; stroke-width: 3; marker-end: url(#arrow); }
     </style>
   </defs>
-  <rect class="bg" x="0" y="0" width="1600" height="620" rx="24" />
-  <text class="title" x="70" y="78">GitHub Actions CI/CD Delivery Pipeline</text>
-  <text class="subtitle" x="70" y="112">Commit quality, build, test and delivery stages use explicit gates and reusable artifacts.</text>
-  <text class="lane" x="172" y="178">COMMIT</text>
-  <text class="lane" x="442" y="178">QUALITY</text>
-  <text class="lane" x="712" y="178">BUILD</text>
-  <text class="lane" x="982" y="178">TEST</text>
-  <text class="lane" x="1252" y="178">DELIVERY</text>
-  <rect class="box" x="70" y="220" width="205" height="140" />
-  <text class="label" x="172" y="270">Pull Request</text>
-  <text class="label" x="172" y="300">or Push</text>
-  <text class="detail" x="172" y="332">Source change</text>
-  <rect class="accent" x="340" y="220" width="205" height="140" />
-  <text class="label" x="442" y="270">Commit</text>
-  <text class="label" x="442" y="300">Quality</text>
-  <text class="detail" x="442" y="332">Lint and Trunk scan</text>
-  <rect class="accent" x="610" y="220" width="205" height="140" />
-  <text class="label" x="712" y="270">Build</text>
-  <text class="label" x="712" y="300">Artifact</text>
-  <text class="detail" x="712" y="332">Versioned dist output</text>
-  <rect class="success" x="880" y="220" width="205" height="140" />
-  <text class="label" x="982" y="270">Automated</text>
-  <text class="label" x="982" y="300">Tests</text>
-  <text class="detail" x="982" y="332">Node test runner</text>
-  <rect class="gate" x="1150" y="220" width="205" height="140" />
-  <text class="label" x="1252" y="270">Delivery</text>
-  <text class="label" x="1252" y="300">Staging</text>
-  <text class="detail" x="1252" y="332">Environment gate</text>
-  <rect class="box" x="610" y="438" width="475" height="76" />
-  <text class="detail" x="848" y="468">Artifact upload and download keeps delivery tied</text>
-  <text class="detail" x="848" y="492">to the exact build that passed validation.</text>
-  <rect class="box" x="1130" y="430" width="245" height="94" />
-  <text class="detail" x="1252" y="462">Delivery manifest</text>
-  <text class="detail" x="1252" y="486">records artifact</text>
-  <text class="detail" x="1252" y="510">and environment.</text>
-  <path class="arrow" d="M275 290 H330" />
-  <path class="arrow" d="M545 290 H600" />
-  <path class="arrow" d="M815 290 H870" />
-  <path class="arrow" d="M1085 290 H1140" />
-  <path class="arrow artifact" d="M712 360 V426" />
-  <path class="arrow artifact" d="M1085 476 H1120" />
-  <path class="arrow" d="M1252 360 V418" />
+
+  <rect width="1400" height="900" rx="24" fill="url(#background)" />
+  <text x="70" y="65" class="title">Azure multi-stage CI/CD delivery</text>
+  <text x="70" y="94" class="subtitle">Independent platforms · shared capacity · isolated stage workloads · protected production gates</text>
+
+  <g filter="url(#shadow)">
+    <rect x="70" y="130" width="210" height="86" rx="14" fill="#e7f6ff" />
+    <text x="175" y="164" text-anchor="middle" class="box-title">Short-lived branch</text>
+    <text x="175" y="190" text-anchor="middle" class="box-copy">feat/* or fix/*</text>
+
+    <rect x="350" y="130" width="240" height="86" rx="14" fill="#e7f6ff" />
+    <text x="470" y="160" text-anchor="middle" class="box-title">Pull request gates</text>
+    <text x="470" y="184" text-anchor="middle" class="box-copy">test · lint · scan · Bicep what-if</text>
+    <text x="470" y="202" text-anchor="middle" class="box-copy">reviewed, protected main</text>
+
+    <rect x="660" y="130" width="250" height="86" rx="14" fill="#d9f7e8" />
+    <text x="785" y="160" text-anchor="middle" class="box-title">Immutable release</text>
+    <text x="785" y="184" text-anchor="middle" class="box-copy">one image + CycloneDX SBOM</text>
+    <text x="785" y="202" text-anchor="middle" class="box-copy">SHA tag · digest · attestations</text>
+
+    <rect x="980" y="130" width="350" height="86" rx="14" fill="#fff2ce" />
+    <text x="1155" y="160" text-anchor="middle" class="box-title">Strategy release tag</text>
+    <text x="1155" y="184" text-anchor="middle" class="box-copy">blue-green-v* · canary-v* · rolling-v*</text>
+    <text x="1155" y="202" text-anchor="middle" class="box-copy">tagged commit must already be on main</text>
+  </g>
+
+  <path d="M280 173H350" class="line" />
+  <path d="M590 173H660" class="line" />
+  <path d="M910 173H980" class="line" />
+
+  <text x="70" y="275" class="section">Two independently approved promotion chains</text>
+
+  <g filter="url(#shadow)">
+    <rect x="70" y="305" width="1260" height="150" rx="18" fill="#f7fbfe" />
+    <rect x="70" y="305" width="245" height="150" rx="18" fill="#1f76b4" />
+    <text x="192" y="350" text-anchor="middle" fill="#fff" font-family="Segoe UI,Arial" font-size="19" font-weight="700">Infrastructure</text>
+    <text x="192" y="379" text-anchor="middle" fill="#d8efff" font-family="Segoe UI,Arial" font-size="13">separate Bicep entry point</text>
+    <text x="192" y="401" text-anchor="middle" fill="#d8efff" font-family="Segoe UI,Arial" font-size="13">shared capacity per platform</text>
+    <text x="192" y="429" text-anchor="middle" fill="#fff" font-family="Segoe UI,Arial" font-size="12">OIDC · validate · what-if · apply</text>
+
+    <rect x="350" y="342" width="145" height="72" rx="12" fill="#dff3ff" />
+    <text x="422" y="384" text-anchor="middle" class="stage">DEV</text>
+    <rect x="540" y="342" width="145" height="72" rx="12" fill="#dff3ff" />
+    <text x="612" y="384" text-anchor="middle" class="stage">TEST</text>
+    <rect x="730" y="342" width="145" height="72" rx="12" fill="#dff3ff" />
+    <text x="802" y="384" text-anchor="middle" class="stage">PREPROD</text>
+    <rect x="920" y="342" width="145" height="72" rx="12" fill="#ffe7a6" />
+    <text x="992" y="372" text-anchor="middle" class="stage">APPROVAL</text>
+    <text x="992" y="395" text-anchor="middle" class="box-copy">platform owners</text>
+    <rect x="1110" y="342" width="145" height="72" rx="12" fill="#c9f1dd" />
+    <text x="1182" y="384" text-anchor="middle" class="stage">PROD</text>
+  </g>
+  <path d="M495 378H540M685 378H730M875 378H920M1065 378H1110" class="line" />
+
+  <g filter="url(#shadow)">
+    <rect x="70" y="490" width="1260" height="150" rx="18" fill="#f7fbfe" />
+    <rect x="70" y="490" width="245" height="150" rx="18" fill="#18896b" />
+    <text x="192" y="535" text-anchor="middle" fill="#fff" font-family="Segoe UI,Arial" font-size="19" font-weight="700">Application</text>
+    <text x="192" y="564" text-anchor="middle" fill="#d8fff3" font-family="Segoe UI,Arial" font-size="13">same saved image</text>
+    <text x="192" y="586" text-anchor="middle" fill="#d8fff3" font-family="Segoe UI,Arial" font-size="13">promoted without rebuild</text>
+    <text x="192" y="614" text-anchor="middle" fill="#fff" font-family="Segoe UI,Arial" font-size="12">health + rollout + rollback</text>
+
+    <rect x="350" y="527" width="145" height="72" rx="12" fill="#d9f7e8" />
+    <text x="422" y="569" text-anchor="middle" class="stage">DEV</text>
+    <rect x="540" y="527" width="145" height="72" rx="12" fill="#d9f7e8" />
+    <text x="612" y="569" text-anchor="middle" class="stage">TEST</text>
+    <rect x="730" y="527" width="145" height="72" rx="12" fill="#d9f7e8" />
+    <text x="802" y="569" text-anchor="middle" class="stage">PREPROD</text>
+    <rect x="920" y="527" width="145" height="72" rx="12" fill="#ffe7a6" />
+    <text x="992" y="557" text-anchor="middle" class="stage">APPROVAL</text>
+    <text x="992" y="580" text-anchor="middle" class="box-copy">service owners</text>
+    <rect x="1110" y="527" width="145" height="72" rx="12" fill="#c9f1dd" />
+    <text x="1182" y="569" text-anchor="middle" class="stage">PROD</text>
+  </g>
+  <path d="M495 563H540M685 563H730M875 563H920M1065 563H1110" class="line" />
+
+  <text x="70" y="705" class="section">Azure-native deployment behavior in every application stage</text>
+  <g filter="url(#shadow)">
+    <rect x="70" y="735" width="390" height="112" rx="16" fill="#e6f2ff" />
+    <circle cx="113" cy="774" r="19" fill="#2784c7" />
+    <text x="113" y="780" text-anchor="middle" fill="#fff" font-family="Segoe UI,Arial" font-weight="700">BG</text>
+    <text x="148" y="775" class="box-title">App Service · blue/green</text>
+    <text x="105" y="808" class="box-copy">staging → preview → verify → swap</text>
+    <text x="105" y="830" class="box-copy">client secret · automatic reverse swap</text>
+
+    <rect x="505" y="735" width="390" height="112" rx="16" fill="#e8faef" />
+    <circle cx="548" cy="774" r="19" fill="#239567" />
+    <text x="548" y="780" text-anchor="middle" fill="#fff" font-family="Segoe UI,Arial" font-weight="700">C</text>
+    <text x="583" y="775" class="box-title">Container Apps · canary</text>
+    <text x="540" y="808" class="box-copy">new revision → 5% → 25% → 50% → 100%</text>
+    <text x="540" y="830" class="box-copy">OIDC · Azure Monitor SLO rollback</text>
+
+    <rect x="940" y="735" width="390" height="112" rx="16" fill="#f2edff" />
+    <circle cx="983" cy="774" r="19" fill="#7453b7" />
+    <text x="983" y="780" text-anchor="middle" fill="#fff" font-family="Segoe UI,Arial" font-weight="700">R</text>
+    <text x="1018" y="775" class="box-title">AKS · rolling</text>
+    <text x="975" y="808" class="box-copy">maxUnavailable 0 · maxSurge 1 · probes</text>
+    <text x="975" y="830" class="box-copy">OIDC · real ACR digest · Helm rollback</text>
+  </g>
+
+  <text x="1330" y="880" text-anchor="end" class="small">Bicep-only infrastructure · no local deployment scripts</text>
 </svg>
