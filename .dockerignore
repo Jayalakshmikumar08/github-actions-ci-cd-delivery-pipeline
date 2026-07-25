@@ -1,0 +1,11 @@
+.git
+.github
+.trunk
+docs
+infra
+node_modules
+release
+test
+dist
+*.md
+npm-debug.log*

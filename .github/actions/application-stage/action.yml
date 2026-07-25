@@ -1,0 +1,122 @@
+name: Deploy one application stage
+description: Route one immutable image through the selected platform deployment strategy
+
+inputs:
+  strategy:
+    description: Deployment strategy (blue-green, canary, or rolling)
+    required: true
+  stage:
+    description: Lifecycle stage
+    required: true
+  artifact-name:
+    description: Build-once artifact used only for the first stage publish
+    required: false
+    default: ""
+  image-ref:
+    description: Existing immutable ACR digest promoted from an earlier stage
+    required: false
+    default: ""
+  azure-credentials:
+    description: App Service environment-scoped Azure client-secret credential JSON
+    required: false
+    default: ""
+  azure-client-id:
+    description: Environment-specific OIDC client ID
+    required: false
+    default: ""
+  azure-tenant-id:
+    description: Azure tenant ID
+    required: false
+    default: ""
+  azure-subscription-id:
+    description: Azure subscription ID
+    required: false
+    default: ""
+  azure-resource-group:
+    description: Platform resource group containing the workload and private ACR
+    required: true
+  azure-deployment-profile:
+    description: Cost and resilience profile for AKS delivery
+    required: false
+    default: developer
+  canary-observation-seconds:
+    description: Observation time at each Container Apps traffic weight
+    required: false
+    default: "120"
+  canary-metric-delay-seconds:
+    description: Azure Monitor ingestion delay
+    required: false
+    default: "60"
+  canary-min-requests:
+    description: Minimum request sample required to promote a canary
+    required: false
+    default: "20"
+  canary-max-error-percent:
+    description: Maximum permitted canary 5xx percentage
+    required: false
+    default: "1"
+
+outputs:
+  image-ref:
+    description: Immutable ACR digest promoted through later stages
+    value: ${{ steps.app-service.outputs.image-ref || steps.container-apps.outputs.image-ref || steps.aks.outputs.image-ref }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate strategy inputs
+      shell: bash
+      env:
+        STRATEGY: ${{ inputs.strategy }}
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        IMAGE_REF: ${{ inputs.image-ref }}
+      run: |
+        set -Eeuo pipefail
+        [[ "$STRATEGY" =~ ^(blue-green|canary|rolling)$ ]]
+        if [[ -z "$IMAGE_REF" ]]; then
+          test -n "$ARTIFACT_NAME"
+        else
+          [[ "$IMAGE_REF" =~ ^[a-z0-9]+\.azurecr\.io/delivery-demo@sha256:[a-f0-9]{64}$ ]]
+        fi
+
+    - name: Deploy App Service blue/green stage
+      if: inputs.strategy == 'blue-green'
+      id: app-service
+      uses: ./.github/actions/app-service-stage
+      with:
+        stage: ${{ inputs.stage }}
+        artifact-name: ${{ inputs.artifact-name }}
+        image-ref: ${{ inputs.image-ref }}
+        azure-credentials: ${{ inputs.azure-credentials }}
+        azure-resource-group: ${{ inputs.azure-resource-group }}
+
+    - name: Deploy Container Apps canary stage
+      if: inputs.strategy == 'canary'
+      id: container-apps
+      uses: ./.github/actions/container-apps-stage
+      with:
+        stage: ${{ inputs.stage }}
+        artifact-name: ${{ inputs.artifact-name }}
+        image-ref: ${{ inputs.image-ref }}
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}
+        azure-resource-group: ${{ inputs.azure-resource-group }}
+        canary-observation-seconds: ${{ inputs.canary-observation-seconds }}
+        canary-metric-delay-seconds: ${{ inputs.canary-metric-delay-seconds }}
+        canary-min-requests: ${{ inputs.canary-min-requests }}
+        canary-max-error-percent: ${{ inputs.canary-max-error-percent }}
+
+    - name: Deploy AKS rolling stage
+      if: inputs.strategy == 'rolling'
+      id: aks
+      uses: ./.github/actions/aks-stage
+      with:
+        stage: ${{ inputs.stage }}
+        artifact-name: ${{ inputs.artifact-name }}
+        image-ref: ${{ inputs.image-ref }}
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}
+        azure-resource-group: ${{ inputs.azure-resource-group }}
+        azure-deployment-profile: ${{ inputs.azure-deployment-profile }}

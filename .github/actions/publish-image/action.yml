@@ -1,0 +1,95 @@
+name: Publish promoted image
+description: Load the build-once artifact, push it by SHA and publish provenance and SBOM attestations
+
+inputs:
+  artifact-name:
+    description: Build artifact to promote
+    required: true
+  azure-resource-group:
+    description: Shared platform resource group containing the target ACR
+    required: true
+
+outputs:
+  image-ref:
+    description: Immutable ACR digest reference
+    value: ${{ steps.publish.outputs.image-ref }}
+
+runs:
+  using: composite
+  steps:
+    - name: Download verified release artifact
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: ${{ inputs.artifact-name }}
+
+    - name: Publish the promoted image to this stage
+      id: publish
+      shell: bash
+      env:
+        AZURE_CORE_OUTPUT: none
+        AZURE_RESOURCE_GROUP: ${{ inputs.azure-resource-group }}
+        IMAGE_REPOSITORY: delivery-demo
+      run: |
+        set -Eeuo pipefail
+        mapfile -t acr_names < <(az acr list \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --query "[?tags.application=='delivery-demo'].name" \
+          --output tsv)
+        if [[ "${#acr_names[@]}" -ne 1 ]]; then
+          echo "::error::Expected exactly one delivery-demo ACR in '$AZURE_RESOURCE_GROUP'; found ${#acr_names[@]}."
+          exit 1
+        fi
+        ACR_NAME="${acr_names[0]}"
+
+        login_succeeded=false
+        for attempt in {1..18}; do
+          if az acr login --name "$ACR_NAME"; then
+            login_succeeded=true
+            break
+          fi
+          echo "Waiting for ACR repository-writer role propagation (${attempt}/18)."
+          sleep 10
+        done
+        [[ "$login_succeeded" == "true" ]]
+
+        docker image load --input release-image.tar
+        source_tag="delivery-demo:build-${GITHUB_SHA}"
+        target_tag="${ACR_NAME}.azurecr.io/${IMAGE_REPOSITORY}:${GITHUB_SHA}"
+        docker image tag "$source_tag" "$target_tag"
+
+        push_succeeded=false
+        for attempt in {1..18}; do
+          if docker image push "$target_tag"; then
+            push_succeeded=true
+            break
+          fi
+          echo "Waiting for ACR repository-writer data-plane propagation (${attempt}/18)."
+          sleep 10
+        done
+        [[ "$push_succeeded" == "true" ]]
+
+        digest="$(az acr repository show \
+          --name "$ACR_NAME" \
+          --image "${IMAGE_REPOSITORY}:${GITHUB_SHA}" \
+          --query digest --output tsv)"
+        [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+        subject_name="${ACR_NAME}.azurecr.io/${IMAGE_REPOSITORY}"
+        image_ref="${subject_name}@${digest}"
+        echo "image-ref=$image_ref" >> "$GITHUB_OUTPUT"
+        echo "digest=$digest" >> "$GITHUB_OUTPUT"
+        echo "subject-name=$subject_name" >> "$GITHUB_OUTPUT"
+
+    - name: Attest build provenance in ACR
+      uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+      with:
+        subject-name: ${{ steps.publish.outputs.subject-name }}
+        subject-digest: ${{ steps.publish.outputs.digest }}
+        push-to-registry: true
+
+    - name: Attest SBOM in ACR
+      uses: actions/attest-sbom@51e74621a501c89df81fc1391c5a8f4cfc9fab2f # v3
+      with:
+        subject-name: ${{ steps.publish.outputs.subject-name }}
+        subject-digest: ${{ steps.publish.outputs.digest }}
+        sbom-path: image.sbom.cdx.json
+        push-to-registry: true

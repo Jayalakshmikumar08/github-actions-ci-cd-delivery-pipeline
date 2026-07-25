@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "replicaCount",
+    "podDisruptionBudget",
+    "autoscaling",
+    "image",
+    "deployment",
+    "service"
+  ],
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "minAvailable"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 19
+        }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minReplicas", "maxReplicas"],
+      "properties": {
+        "minReplicas": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "maxReplicas": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "digest"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+\\.azurecr\\.io/delivery-demo$"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["releaseSha", "stage"],
+      "properties": {
+        "releaseSha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "stage": {
+          "type": "string",
+          "enum": ["dev", "test", "preprod", "prod"]
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ClusterIP", "LoadBalancer"]
+        }
+      }
+    }
+  }
+}

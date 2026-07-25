@@ -1,0 +1,6 @@
+apiVersion: v2
+name: delivery-demo
+description: Production AKS rolling-update workload for the delivery strategy demonstration
+type: application
+version: 1.0.0
+appVersion: 1.0.0

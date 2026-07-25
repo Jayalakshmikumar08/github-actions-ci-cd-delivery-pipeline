@@ -1,0 +1,588 @@
+name: Infrastructure
+run-name: >-
+  Infrastructure • ${{ github.event_name == 'pull_request' && format('preview PR #{0}', github.event.pull_request.number) || format('deploy {0}', github.ref_name) }}
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - infra/app-service/**
+      - infra/container-apps/**
+      - infra/aks/**
+      - infra/modules/**
+      - .github/actions/build-release/**
+      - .github/actions/infra-stage/**
+      - .github/actions/infrastructure-platform-stage/**
+      - .github/actions/private-acr-infra-stage/**
+      - .github/actions/publish-image/**
+      - .github/workflows/infrastructure.yml
+  push:
+    branches: [main]
+    paths:
+      - infra/app-service/**
+      - infra/container-apps/**
+      - infra/aks/**
+      - infra/modules/**
+      - .github/actions/build-release/**
+      - .github/actions/infra-stage/**
+      - .github/actions/infrastructure-platform-stage/**
+      - .github/actions/private-acr-infra-stage/**
+      - .github/actions/publish-image/**
+      - .github/workflows/infrastructure.yml
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to reconcile
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - app-service
+          - container-apps
+          - aks
+
+concurrency:
+  group: infrastructure-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'delivery' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Select changed platforms
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      app-service: ${{ steps.select.outputs.app-service }}
+      container-apps: ${{ steps.select.outputs.container-apps }}
+      aks: ${{ steps.select.outputs.aks }}
+      preview-platforms: ${{ steps.select.outputs.preview-platforms }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Build platform selection
+        id: select
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_PLATFORM: ${{ inputs.platform }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+        run: |
+          set -Eeuo pipefail
+          app_service=false
+          container_apps=false
+          aks=false
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            case "$DISPATCH_PLATFORM" in
+              all)
+                app_service=true
+                container_apps=true
+                aks=true
+                ;;
+              app-service) app_service=true ;;
+              container-apps) container_apps=true ;;
+              aks) aks=true ;;
+              *) exit 1 ;;
+            esac
+          else
+            if [[ "$EVENT_NAME" == "pull_request" ]]; then
+              base_sha="$PR_BASE_SHA"
+            else
+              base_sha="$PUSH_BASE_SHA"
+              if [[ "$base_sha" =~ ^0+$ ]]; then
+                base_sha="${GITHUB_SHA}^"
+              fi
+            fi
+
+            mapfile -t changed_files < <(git diff --name-only "$base_sha" "$GITHUB_SHA")
+            for path in "${changed_files[@]}"; do
+              case "$path" in
+                infra/app-service/*) app_service=true ;;
+                infra/container-apps/*) container_apps=true ;;
+                infra/aks/*) aks=true ;;
+                infra/modules/*|.github/actions/build-release/*|.github/actions/infra-stage/*|.github/actions/infrastructure-platform-stage/*|.github/actions/private-acr-infra-stage/*|.github/actions/publish-image/*|.github/workflows/infrastructure.yml)
+                  app_service=true
+                  container_apps=true
+                  aks=true
+                  ;;
+              esac
+            done
+          fi
+
+          preview_platforms="$(jq -cn --argjson app_service "$app_service" --argjson container_apps "$container_apps" --argjson aks "$aks" '[if $app_service then "app-service" else empty end, if $container_apps then "container-apps" else empty end, if $aks then "aks" else empty end]')"
+          [[ "$preview_platforms" != "[]" ]]
+          echo "app-service=$app_service" >> "$GITHUB_OUTPUT"
+          echo "container-apps=$container_apps" >> "$GITHUB_OUTPUT"
+          echo "aks=$aks" >> "$GITHUB_OUTPUT"
+          echo "preview-platforms=$preview_platforms" >> "$GITHUB_OUTPUT"
+          echo "Selected platforms: $preview_platforms" >> "$GITHUB_STEP_SUMMARY"
+
+  preview:
+    name: Preview ${{ matrix.platform }} developer profile
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: changes
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(needs.changes.outputs.preview-platforms) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    environment: infra-${{ matrix.platform }}-plan
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: ${{ matrix.platform }}
+          stage: prod
+          apply: "false"
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}
+          publisher-principal-object-id: ${{ vars.PUBLISHER_PRINCIPAL_OBJECT_ID }}
+
+  build:
+    name: Build, scan and package bootstrap image
+    if: >-
+      github.event_name != 'pull_request' &&
+      (needs.changes.outputs.app-service == 'true' ||
+       needs.changes.outputs.container-apps == 'true')
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      artifact-name: ${{ steps.build.outputs.artifact-name }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - id: build
+        uses: ./.github/actions/build-release
+
+  # This read-only gate uses the plan identity so a zero Microsoft.Web regional
+  # limit skips the complete App Service chain before any apply Environment is
+  # entered. The platform action repeats the check defensively for PR previews
+  # and direct composite-action reuse.
+
+  app-service-capacity:
+    name: Check App Service P0v4 capacity
+    if: >-
+      github.event_name != 'pull_request' &&
+      needs.changes.outputs.app-service == 'true'
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: infra-app-service-plan
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      ready: ${{ steps.capacity.outputs.ready }}
+    steps:
+      - uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Check regional and SKU limits
+        id: capacity
+        shell: bash
+        env:
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_DEPLOYMENT_PROFILE: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$AZURE_DEPLOYMENT_PROFILE" =~ ^(developer|production)$ ]]
+          if [[ "$AZURE_DEPLOYMENT_PROFILE" == "production" ]]; then
+            app_service_sku=P0v3
+          else
+            app_service_sku=P0v4
+          fi
+          usage="$(az rest --method get --url "https://management.azure.com/subscriptions/${AZURE_SUBSCRIPTION_ID}/providers/Microsoft.Web/locations/${AZURE_LOCATION}/usages?api-version=2025-05-01" --output json)"
+          regional_limit="$(jq -r '[.value[] | select(.name.value == "*") | .limit][0] // 0' <<<"$usage")"
+          sku_limit="$(jq -r --arg sku "$app_service_sku" '[.value[] | select(.name.value == $sku) | .limit][0] // 0' <<<"$usage")"
+          [[ "$regional_limit" =~ ^[0-9]+$ ]]
+          [[ "$sku_limit" =~ ^[0-9]+$ ]]
+          ready=false
+          if ((regional_limit >= 1 && sku_limit >= 1)); then
+            ready=true
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          echo "Total Regional VMs=$regional_limit, ${app_service_sku}=$sku_limit, ready=$ready" >> "$GITHUB_STEP_SUMMARY"
+
+  app-service-dev:
+    name: Deploy App Service dev
+    if: >-
+      needs.app-service-capacity.outputs.ready == 'true'
+    needs: [build, app-service-capacity]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: infra-app-service-dev
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: app-service
+          stage: dev
+          apply: "true"
+          artifact-name: ${{ needs.build.outputs.artifact-name }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}
+          publisher-principal-object-id: ${{ vars.PUBLISHER_PRINCIPAL_OBJECT_ID }}
+
+  app-service-test:
+    name: Deploy App Service test
+    needs: [build, app-service-dev]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: infra-app-service-test
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: app-service
+          stage: test
+          apply: "true"
+          artifact-name: ${{ needs.build.outputs.artifact-name }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}
+          publisher-principal-object-id: ${{ vars.PUBLISHER_PRINCIPAL_OBJECT_ID }}
+
+  app-service-preprod:
+    name: Deploy App Service preprod
+    needs: [build, app-service-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: infra-app-service-preprod
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: app-service
+          stage: preprod
+          apply: "true"
+          artifact-name: ${{ needs.build.outputs.artifact-name }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}
+          publisher-principal-object-id: ${{ vars.PUBLISHER_PRINCIPAL_OBJECT_ID }}
+
+  app-service-prod:
+    name: Deploy App Service prod
+    needs: [build, app-service-preprod]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: infra-app-service-prod
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: app-service
+          stage: prod
+          apply: "true"
+          artifact-name: ${{ needs.build.outputs.artifact-name }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}
+          publisher-principal-object-id: ${{ vars.PUBLISHER_PRINCIPAL_OBJECT_ID }}
+
+  container-apps-dev:
+    name: Deploy Container Apps dev
+    if: >-
+      github.event_name != 'pull_request' &&
+      needs.changes.outputs.container-apps == 'true'
+    needs: [changes, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: infra-container-apps-dev
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: container-apps
+          stage: dev
+          apply: "true"
+          artifact-name: ${{ needs.build.outputs.artifact-name }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}
+          publisher-principal-object-id: ${{ vars.PUBLISHER_PRINCIPAL_OBJECT_ID }}
+
+  container-apps-test:
+    name: Deploy Container Apps test
+    needs: [build, container-apps-dev]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: infra-container-apps-test
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: container-apps
+          stage: test
+          apply: "true"
+          artifact-name: ${{ needs.build.outputs.artifact-name }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}
+          publisher-principal-object-id: ${{ vars.PUBLISHER_PRINCIPAL_OBJECT_ID }}
+
+  container-apps-preprod:
+    name: Deploy Container Apps preprod
+    needs: [build, container-apps-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: infra-container-apps-preprod
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: container-apps
+          stage: preprod
+          apply: "true"
+          artifact-name: ${{ needs.build.outputs.artifact-name }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}
+          publisher-principal-object-id: ${{ vars.PUBLISHER_PRINCIPAL_OBJECT_ID }}
+
+  container-apps-prod:
+    name: Deploy Container Apps prod
+    needs: [build, container-apps-preprod]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: infra-container-apps-prod
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: container-apps
+          stage: prod
+          apply: "true"
+          artifact-name: ${{ needs.build.outputs.artifact-name }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}
+          publisher-principal-object-id: ${{ vars.PUBLISHER_PRINCIPAL_OBJECT_ID }}
+
+  aks-dev:
+    name: Deploy AKS dev
+    if: >-
+      github.event_name != 'pull_request' &&
+      needs.changes.outputs.aks == 'true'
+    needs: [changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: infra-aks-dev
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: aks
+          stage: dev
+          apply: "true"
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}
+
+  aks-test:
+    name: Deploy AKS test
+    needs: [aks-dev]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: infra-aks-test
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: aks
+          stage: test
+          apply: "true"
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}
+
+  aks-preprod:
+    name: Deploy AKS preprod
+    needs: [aks-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: infra-aks-preprod
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: aks
+          stage: preprod
+          apply: "true"
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}
+
+  aks-prod:
+    name: Deploy AKS prod
+    needs: [aks-preprod]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: infra-aks-prod
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/infrastructure-platform-stage
+        with:
+          platform: aks
+          stage: prod
+          apply: "true"
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-location: ${{ vars.AZURE_LOCATION }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-resource-prefix: ${{ vars.AZURE_RESOURCE_PREFIX }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          deployment-principal-object-id: ${{ vars.DEPLOYMENT_PRINCIPAL_OBJECT_ID }}

@@ -1,0 +1,179 @@
+name: Application Delivery
+run-name: >-
+  Application • ${{ github.ref_name }}
+
+on:
+  push:
+    tags:
+      - blue-green-v*
+      - canary-v*
+      - rolling-v*
+
+concurrency:
+  group: application-delivery-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Resolve release strategy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      strategy: ${{ steps.resolve.outputs.strategy }}
+      platform: ${{ steps.resolve.outputs.platform }}
+    steps:
+      - name: Resolve protected release tag
+        id: resolve
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$EVENT_NAME" == "push" ]]
+          case "$REF_NAME" in
+            blue-green-v*) strategy=blue-green ;;
+            canary-v*) strategy=canary ;;
+            rolling-v*) strategy=rolling ;;
+            *) exit 1 ;;
+          esac
+
+          case "$strategy" in
+            blue-green) platform=app-service ;;
+            canary) platform=container-apps ;;
+            rolling) platform=aks ;;
+            *) exit 1 ;;
+          esac
+          echo "strategy=$strategy" >> "$GITHUB_OUTPUT"
+          echo "platform=$platform" >> "$GITHUB_OUTPUT"
+          echo "Selected ${strategy} delivery on ${platform}." >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build, scan and package once
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      artifact-name: ${{ steps.build.outputs.artifact-name }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - id: build
+        uses: ./.github/actions/build-release
+
+  dev:
+    name: ${{ needs.release.outputs.strategy }} dev
+    needs: [release, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: app-${{ needs.release.outputs.platform }}-dev
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    outputs:
+      image-ref: ${{ steps.deploy.outputs.image-ref }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Publish once and deploy dev
+        id: deploy
+        uses: ./.github/actions/application-stage
+        with:
+          strategy: ${{ needs.release.outputs.strategy }}
+          stage: dev
+          artifact-name: ${{ needs.build.outputs.artifact-name }}
+          azure-credentials: ${{ secrets.AZURE_CREDENTIALS }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          canary-observation-seconds: ${{ vars.CANARY_OBSERVATION_SECONDS || '120' }}
+          canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '60' }}
+          canary-min-requests: ${{ vars.CANARY_MIN_REQUESTS || '20' }}
+          canary-max-error-percent: ${{ vars.CANARY_MAX_ERROR_PERCENT || '1' }}
+
+  test:
+    name: ${{ needs.release.outputs.strategy }} test
+    needs: [release, dev]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: app-${{ needs.release.outputs.platform }}-test
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ./.github/actions/application-stage
+        with:
+          strategy: ${{ needs.release.outputs.strategy }}
+          stage: test
+          image-ref: ${{ needs.dev.outputs.image-ref }}
+          azure-credentials: ${{ secrets.AZURE_CREDENTIALS }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          canary-observation-seconds: ${{ vars.CANARY_OBSERVATION_SECONDS || '120' }}
+          canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '60' }}
+          canary-min-requests: ${{ vars.CANARY_MIN_REQUESTS || '20' }}
+          canary-max-error-percent: ${{ vars.CANARY_MAX_ERROR_PERCENT || '1' }}
+
+  preprod:
+    name: ${{ needs.release.outputs.strategy }} preprod
+    needs: [release, dev, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: app-${{ needs.release.outputs.platform }}-preprod
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ./.github/actions/application-stage
+        with:
+          strategy: ${{ needs.release.outputs.strategy }}
+          stage: preprod
+          image-ref: ${{ needs.dev.outputs.image-ref }}
+          azure-credentials: ${{ secrets.AZURE_CREDENTIALS }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          canary-observation-seconds: ${{ vars.CANARY_OBSERVATION_SECONDS || '120' }}
+          canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '60' }}
+          canary-min-requests: ${{ vars.CANARY_MIN_REQUESTS || '20' }}
+          canary-max-error-percent: ${{ vars.CANARY_MAX_ERROR_PERCENT || '1' }}
+
+  prod:
+    name: ${{ needs.release.outputs.strategy }} prod
+    needs: [release, dev, preprod]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: app-${{ needs.release.outputs.platform }}-prod
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ./.github/actions/application-stage
+        with:
+          strategy: ${{ needs.release.outputs.strategy }}
+          stage: prod
+          image-ref: ${{ needs.dev.outputs.image-ref }}
+          azure-credentials: ${{ secrets.AZURE_CREDENTIALS }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
+          canary-observation-seconds: ${{ vars.CANARY_OBSERVATION_SECONDS || '120' }}
+          canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '60' }}
+          canary-min-requests: ${{ vars.CANARY_MIN_REQUESTS || '20' }}
+          canary-max-error-percent: ${{ vars.CANARY_MAX_ERROR_PERCENT || '1' }}

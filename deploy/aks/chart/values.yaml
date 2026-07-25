@@ -1,0 +1,15 @@
+replicaCount: 1
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 0
+
+autoscaling:
+  minReplicas: 1
+  maxReplicas: 2
+
+# Intentionally empty: CI must supply the real Bicep-provisioned ACR repository
+# and immutable digest. values.schema.json rejects a render without both.
+image: {}
+deployment: {}
+service: {}
