@@ -120,6 +120,7 @@ jobs:
           echo "Selected platforms: $preview_platforms" >> "$GITHUB_STEP_SUMMARY"
 
   preview:
+    # Pull requests validate Azure changes with what-if; resources are not modified.
     name: Preview ${{ matrix.platform }} developer profile
     if: >-
       github.event_name == 'pull_request' &&
