@@ -47,9 +47,9 @@ inputs:
     required: false
     default: "120"
   canary-metric-delay-seconds:
-    description: Azure Monitor ingestion delay
+    description: Maximum wait for Azure Monitor to ingest the canary request sample
     required: false
-    default: "60"
+    default: "180"
   canary-min-requests:
     description: Minimum request sample required to promote a canary
     required: false

@@ -94,7 +94,7 @@ jobs:
           azure-registry-name: ${{ vars.AZURE_REGISTRY_NAME }}
           azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
           canary-observation-seconds: ${{ vars.CANARY_OBSERVATION_SECONDS || '120' }}
-          canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '60' }}
+          canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '180' }}
           canary-min-requests: ${{ vars.CANARY_MIN_REQUESTS || '20' }}
           canary-max-error-percent: ${{ vars.CANARY_MAX_ERROR_PERCENT || '1' }}
 
@@ -122,7 +122,7 @@ jobs:
           azure-registry-name: ${{ vars.AZURE_REGISTRY_NAME }}
           azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
           canary-observation-seconds: ${{ vars.CANARY_OBSERVATION_SECONDS || '120' }}
-          canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '60' }}
+          canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '180' }}
           canary-min-requests: ${{ vars.CANARY_MIN_REQUESTS || '20' }}
           canary-max-error-percent: ${{ vars.CANARY_MAX_ERROR_PERCENT || '1' }}
 
@@ -150,7 +150,7 @@ jobs:
           azure-registry-name: ${{ vars.AZURE_REGISTRY_NAME }}
           azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
           canary-observation-seconds: ${{ vars.CANARY_OBSERVATION_SECONDS || '120' }}
-          canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '60' }}
+          canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '180' }}
           canary-min-requests: ${{ vars.CANARY_MIN_REQUESTS || '20' }}
           canary-max-error-percent: ${{ vars.CANARY_MAX_ERROR_PERCENT || '1' }}
 
@@ -178,6 +178,6 @@ jobs:
           azure-registry-name: ${{ vars.AZURE_REGISTRY_NAME }}
           azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
           canary-observation-seconds: ${{ vars.CANARY_OBSERVATION_SECONDS || '120' }}
-          canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '60' }}
+          canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '180' }}
           canary-min-requests: ${{ vars.CANARY_MIN_REQUESTS || '20' }}
           canary-max-error-percent: ${{ vars.CANARY_MAX_ERROR_PERCENT || '1' }}

@@ -33,9 +33,9 @@ inputs:
     required: false
     default: "120"
   canary-metric-delay-seconds:
-    description: Azure Monitor ingestion delay
+    description: Maximum wait for Azure Monitor to ingest the canary request sample
     required: false
-    default: "60"
+    default: "180"
   canary-min-requests:
     description: Minimum request sample required to promote
     required: false
@@ -131,33 +131,56 @@ runs:
 
         metric_total() {
           local start_time="$1"
-          local filter="$2"
+          local end_time="$2"
+          local filter="$3"
           az monitor metrics list \
             --resource "$app_resource_id" \
             --metric Requests \
             --interval PT1M \
             --aggregation Total \
             --start-time "$start_time" \
+            --end-time "$end_time" \
             --filter "$filter" \
             --output json |
             jq '[.value[0]?.timeseries[]?.data[]?.total // 0] | add // 0'
         }
 
         enforce_slo_gate() {
-          local start_time="$1"
-          local total errors
-          total="$(metric_total "$start_time" \
-            "revisionName eq '$new_revision'")"
-          errors="$(metric_total "$start_time" \
-            "revisionName eq '$new_revision' and statusCodeCategory eq '5xx'")"
-          echo "Canary metrics: requests=${total}, 5xx=${errors}."
-          jq -en \
-            --argjson total "$total" \
-            --argjson errors "$errors" \
-            --argjson minimum "$CANARY_MIN_REQUESTS" \
-            --argjson maximum "$CANARY_MAX_ERROR_PERCENT" \
-            'if $total < $minimum then false else (($errors * 100 / $total) <= $maximum) end' \
-            >/dev/null
+          local query_start="$1"
+          local baseline_total="$2"
+          local baseline_errors="$3"
+          local current_errors current_total deadline delta_errors delta_total end_time now
+          deadline=$((SECONDS + CANARY_METRIC_DELAY_SECONDS))
+
+          while true; do
+            # Azure Monitor finalizes Container Apps metrics in one-minute buckets.
+            # Query only through the latest closed bucket; querying the current bucket
+            # can temporarily return zero even after the requests were processed.
+            end_time="$(date --utc +%Y-%m-%dT%H:%M:00Z)"
+            current_total="$(metric_total "$query_start" "$end_time" \
+              "revisionName eq '$new_revision'")"
+            current_errors="$(metric_total "$query_start" "$end_time" \
+              "revisionName eq '$new_revision' and statusCodeCategory eq '5xx'")"
+            delta_total=$((current_total - baseline_total))
+            delta_errors=$((current_errors - baseline_errors))
+            echo "Canary metrics through ${end_time}: requests=${delta_total}, 5xx=${delta_errors}."
+
+            if ((delta_total >= CANARY_MIN_REQUESTS)); then
+              jq -en \
+                --argjson total "$delta_total" \
+                --argjson errors "$delta_errors" \
+                --argjson maximum "$CANARY_MAX_ERROR_PERCENT" \
+                '(($errors * 100 / $total) <= $maximum)' >/dev/null
+              return 0
+            fi
+
+            now=$SECONDS
+            if ((now >= deadline)); then
+              echo "::error::Azure Monitor did not report the required ${CANARY_MIN_REQUESTS} canary requests within ${CANARY_METRIC_DELAY_SECONDS} seconds."
+              return 1
+            fi
+            sleep 10
+          done
         }
 
         generate_canary_sample() {
@@ -242,10 +265,10 @@ runs:
         test -n "$candidate_fqdn"
         candidate_url="https://${candidate_fqdn}"
         verify_release "$candidate_url"
+        metric_query_start="$(date --utc --date='1 minute ago' +%Y-%m-%dT%H:%M:00Z)"
 
         for candidate_weight in 5 25 50 100; do
           stable_weight=$((100 - candidate_weight))
-          stage_start="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
           az containerapp ingress traffic set \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$CONTAINER_APP_NAME" \
@@ -253,6 +276,11 @@ runs:
               "${stable_revision}=${stable_weight}" \
               "${new_revision}=${candidate_weight}"
           verify_release "$candidate_url"
+          baseline_end="$(date --utc +%Y-%m-%dT%H:%M:00Z)"
+          baseline_total="$(metric_total "$metric_query_start" "$baseline_end" \
+            "revisionName eq '$new_revision'")"
+          baseline_errors="$(metric_total "$metric_query_start" "$baseline_end" \
+            "revisionName eq '$new_revision' and statusCodeCategory eq '5xx'")"
           generate_canary_sample
           sleep "$CANARY_OBSERVATION_SECONDS"
           state="$(az containerapp revision show \
@@ -261,8 +289,7 @@ runs:
             --revision "$new_revision" \
             --query properties.runningState --output tsv)"
           [[ "$state" == "Running" ]]
-          sleep "$CANARY_METRIC_DELAY_SECONDS"
-          enforce_slo_gate "$stage_start"
+          enforce_slo_gate "$metric_query_start" "$baseline_total" "$baseline_errors"
         done
 
         trap - ERR
