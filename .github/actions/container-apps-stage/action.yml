@@ -106,7 +106,6 @@ runs:
         jq -en --arg value "$CANARY_MAX_ERROR_PERCENT" \
           '($value | tonumber) >= 0 and ($value | tonumber) <= 100' >/dev/null
         revision_suffix="c${RELEASE_SHA:0:8}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-        candidate_label="candidate-${RELEASE_SHA:0:8}-${GITHUB_RUN_ID}"
         new_revision=""
         CONTAINER_APP_NAME="$(az containerapp list \
           --resource-group "$AZURE_RESOURCE_GROUP" \
@@ -227,11 +226,6 @@ runs:
         done
         [[ "$state" == "Running" ]]
 
-        az containerapp revision label add \
-          --resource-group "$AZURE_RESOURCE_GROUP" \
-          --name "$CONTAINER_APP_NAME" \
-          --revision "$new_revision" \
-          --label "$candidate_label"
         app_fqdn="$(az containerapp show \
           --resource-group "$AZURE_RESOURCE_GROUP" \
           --name "$CONTAINER_APP_NAME" \
@@ -240,7 +234,13 @@ runs:
           --resource-group "$AZURE_RESOURCE_GROUP" \
           --name "$CONTAINER_APP_NAME" \
           --query id --output tsv)"
-        candidate_url="https://${candidate_label}---${app_fqdn}"
+        candidate_fqdn="$(az containerapp revision show \
+          --resource-group "$AZURE_RESOURCE_GROUP" \
+          --name "$CONTAINER_APP_NAME" \
+          --revision "$new_revision" \
+          --query properties.fqdn --output tsv)"
+        test -n "$candidate_fqdn"
+        candidate_url="https://${candidate_fqdn}"
         verify_release "$candidate_url"
 
         for candidate_weight in 5 25 50 100; do
