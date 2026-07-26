@@ -6,8 +6,12 @@ inputs:
     description: Build artifact to promote
     required: true
   azure-resource-group:
-    description: Shared platform resource group containing the target ACR
+    description: Shared platform resource group used in validation messages
     required: true
+  azure-registry-name:
+    description: Exact private ACR name provisioned for this delivery platform
+    required: false
+    default: ""
 
 outputs:
   image-ref:
@@ -28,18 +32,22 @@ runs:
       env:
         AZURE_CORE_OUTPUT: none
         AZURE_RESOURCE_GROUP: ${{ inputs.azure-resource-group }}
+        ACR_NAME: ${{ inputs.azure-registry-name }}
         IMAGE_REPOSITORY: delivery-demo
       run: |
         set -Eeuo pipefail
-        mapfile -t acr_names < <(az acr list \
-          --resource-group "$AZURE_RESOURCE_GROUP" \
-          --query "[?tags.application=='delivery-demo'].name" \
-          --output tsv)
-        if [[ "${#acr_names[@]}" -ne 1 ]]; then
-          echo "::error::Expected exactly one delivery-demo ACR in '$AZURE_RESOURCE_GROUP'; found ${#acr_names[@]}."
-          exit 1
+        if [[ -z "$ACR_NAME" ]]; then
+          mapfile -t acr_names < <(az acr list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query "[?tags.application=='delivery-demo'].name" \
+            --output tsv)
+          if [[ "${#acr_names[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one delivery-demo ACR in '$AZURE_RESOURCE_GROUP'; found ${#acr_names[@]}."
+            exit 1
+          fi
+          ACR_NAME="${acr_names[0]}"
         fi
-        ACR_NAME="${acr_names[0]}"
+        [[ "$ACR_NAME" =~ ^[a-z0-9]{5,50}$ ]]
 
         login_succeeded=false
         for attempt in {1..18}; do
