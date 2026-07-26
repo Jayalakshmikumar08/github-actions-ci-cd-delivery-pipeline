@@ -204,8 +204,9 @@ resource namespace 'Microsoft.ContainerService/managedClusters/managedNamespaces
       egress: 'AllowAll'
     }
     defaultResourceQuota: {
-      cpuLimit: isProduction ? '4' : '1'
-      cpuRequest: isProduction ? '2' : '500m'
+      // Managed Namespace CPU quotas require Kubernetes milliCPU notation.
+      cpuLimit: isProduction ? '4000m' : '1000m'
+      cpuRequest: isProduction ? '2000m' : '500m'
       memoryLimit: isProduction ? '8Gi' : '2Gi'
       memoryRequest: isProduction ? '4Gi' : '1Gi'
     }
