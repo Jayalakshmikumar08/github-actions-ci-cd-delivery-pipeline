@@ -173,10 +173,10 @@ runs:
           --resource-group "$AZURE_RESOURCE_GROUP" \
           --name "$CONTAINER_APP_NAME" \
           --mode multiple
-        stable_revision="$(az containerapp ingress traffic show \
+        stable_revision="$(az containerapp revision list \
           --resource-group "$AZURE_RESOURCE_GROUP" \
           --name "$CONTAINER_APP_NAME" \
-          --query "sort_by([?weight > \`0\`], &weight)[-1].revisionName" \
+          --query "sort_by([?properties.active && properties.trafficWeight > \`0\`], &properties.trafficWeight)[-1].name" \
           --output tsv)"
         test -n "$stable_revision"
 
