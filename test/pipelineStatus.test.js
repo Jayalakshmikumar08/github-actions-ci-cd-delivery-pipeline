@@ -5,6 +5,7 @@ import { normalizeSha, resolveReleaseChannel } from "../src/pipelineStatus.js";
 
 test("normalizes empty and long commit hashes", () => {
   assert.equal(normalizeSha(""), "local");
+  assert.equal(normalizeSha("   "), "local");
   assert.equal(normalizeSha(undefined), "local");
   assert.equal(normalizeSha("1234567890abcdef"), "1234567890ab");
 });
