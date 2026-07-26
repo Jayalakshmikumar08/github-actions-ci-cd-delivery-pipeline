@@ -14,7 +14,6 @@ on:
       - .github/actions/infra-stage/**
       - .github/actions/infrastructure-platform-stage/**
       - .github/actions/private-acr-infra-stage/**
-      - .github/actions/publish-image/**
       - .github/workflows/infrastructure.yml
   push:
     branches: [main]
@@ -27,8 +26,6 @@ on:
       - .github/actions/infra-stage/**
       - .github/actions/infrastructure-platform-stage/**
       - .github/actions/private-acr-infra-stage/**
-      - .github/actions/publish-image/**
-      - .github/workflows/infrastructure.yml
   workflow_dispatch:
     inputs:
       platform:
@@ -105,7 +102,7 @@ jobs:
                 infra/app-service/*) app_service=true ;;
                 infra/container-apps/*) container_apps=true ;;
                 infra/aks/*) aks=true ;;
-                infra/modules/*|.github/actions/build-release/*|.github/actions/infra-stage/*|.github/actions/infrastructure-platform-stage/*|.github/actions/private-acr-infra-stage/*|.github/actions/publish-image/*|.github/workflows/infrastructure.yml)
+                infra/modules/*|.github/actions/build-release/*|.github/actions/infra-stage/*|.github/actions/infrastructure-platform-stage/*|.github/actions/private-acr-infra-stage/*|.github/workflows/infrastructure.yml)
                   app_service=true
                   container_apps=true
                   aks=true
