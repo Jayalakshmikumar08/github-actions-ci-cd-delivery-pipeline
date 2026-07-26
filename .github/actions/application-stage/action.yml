@@ -35,6 +35,9 @@ inputs:
   azure-resource-group:
     description: Platform resource group containing the workload and private ACR
     required: true
+  azure-registry-name:
+    description: Exact private ACR name provisioned for the selected platform
+    required: true
   azure-deployment-profile:
     description: Cost and resilience profile for AKS delivery
     required: false
@@ -70,9 +73,11 @@ runs:
         STRATEGY: ${{ inputs.strategy }}
         ARTIFACT_NAME: ${{ inputs.artifact-name }}
         IMAGE_REF: ${{ inputs.image-ref }}
+        AZURE_REGISTRY_NAME: ${{ inputs.azure-registry-name }}
       run: |
         set -Eeuo pipefail
         [[ "$STRATEGY" =~ ^(blue-green|canary|rolling)$ ]]
+        [[ "$AZURE_REGISTRY_NAME" =~ ^[a-z0-9]{5,50}$ ]]
         if [[ -z "$IMAGE_REF" ]]; then
           test -n "$ARTIFACT_NAME"
         else
@@ -89,6 +94,7 @@ runs:
         image-ref: ${{ inputs.image-ref }}
         azure-credentials: ${{ inputs.azure-credentials }}
         azure-resource-group: ${{ inputs.azure-resource-group }}
+        azure-registry-name: ${{ inputs.azure-registry-name }}
 
     - name: Deploy Container Apps canary stage
       if: inputs.strategy == 'canary'
@@ -102,6 +108,7 @@ runs:
         azure-tenant-id: ${{ inputs.azure-tenant-id }}
         azure-subscription-id: ${{ inputs.azure-subscription-id }}
         azure-resource-group: ${{ inputs.azure-resource-group }}
+        azure-registry-name: ${{ inputs.azure-registry-name }}
         canary-observation-seconds: ${{ inputs.canary-observation-seconds }}
         canary-metric-delay-seconds: ${{ inputs.canary-metric-delay-seconds }}
         canary-min-requests: ${{ inputs.canary-min-requests }}
@@ -119,4 +126,5 @@ runs:
         azure-tenant-id: ${{ inputs.azure-tenant-id }}
         azure-subscription-id: ${{ inputs.azure-subscription-id }}
         azure-resource-group: ${{ inputs.azure-resource-group }}
+        azure-registry-name: ${{ inputs.azure-registry-name }}
         azure-deployment-profile: ${{ inputs.azure-deployment-profile }}

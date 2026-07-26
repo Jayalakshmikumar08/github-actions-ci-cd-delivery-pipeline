@@ -91,6 +91,7 @@ jobs:
           azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
           azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-registry-name: ${{ vars.AZURE_REGISTRY_NAME }}
           azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
           canary-observation-seconds: ${{ vars.CANARY_OBSERVATION_SECONDS || '120' }}
           canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '60' }}
@@ -118,6 +119,7 @@ jobs:
           azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
           azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-registry-name: ${{ vars.AZURE_REGISTRY_NAME }}
           azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
           canary-observation-seconds: ${{ vars.CANARY_OBSERVATION_SECONDS || '120' }}
           canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '60' }}
@@ -145,6 +147,7 @@ jobs:
           azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
           azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-registry-name: ${{ vars.AZURE_REGISTRY_NAME }}
           azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
           canary-observation-seconds: ${{ vars.CANARY_OBSERVATION_SECONDS || '120' }}
           canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '60' }}
@@ -172,6 +175,7 @@ jobs:
           azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
           azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           azure-resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          azure-registry-name: ${{ vars.AZURE_REGISTRY_NAME }}
           azure-deployment-profile: ${{ vars.AZURE_DEPLOYMENT_PROFILE || 'developer' }}
           canary-observation-seconds: ${{ vars.CANARY_OBSERVATION_SECONDS || '120' }}
           canary-metric-delay-seconds: ${{ vars.CANARY_METRIC_DELAY_SECONDS || '60' }}

@@ -19,6 +19,9 @@ inputs:
   azure-resource-group:
     description: Shared App Service platform resource group
     required: true
+  azure-registry-name:
+    description: Exact private ACR name provisioned for App Service
+    required: true
 
 outputs:
   image-ref:
@@ -40,6 +43,7 @@ runs:
       with:
         artifact-name: ${{ inputs.artifact-name }}
         azure-resource-group: ${{ inputs.azure-resource-group }}
+        azure-registry-name: ${{ inputs.azure-registry-name }}
 
     - name: Deploy with slot preview, verification and rollback
       shell: bash

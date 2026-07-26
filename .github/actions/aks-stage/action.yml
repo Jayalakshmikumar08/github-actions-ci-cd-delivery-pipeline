@@ -25,6 +25,9 @@ inputs:
   azure-resource-group:
     description: Shared AKS platform resource group
     required: true
+  azure-registry-name:
+    description: Exact private ACR name provisioned for AKS
+    required: true
   azure-deployment-profile:
     description: Workload cost and resilience profile (developer or production)
     required: false
@@ -75,6 +78,7 @@ runs:
       with:
         artifact-name: ${{ inputs.artifact-name }}
         azure-resource-group: ${{ inputs.azure-resource-group }}
+        azure-registry-name: ${{ inputs.azure-registry-name }}
 
     - name: Install kubectl
       uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
