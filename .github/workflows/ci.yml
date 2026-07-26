@@ -104,6 +104,10 @@ jobs:
 
       - name: Compile infrastructure template
         run: |
+          if rg --line-number "cpu(Limit|Request):.*'[0-9]+'" infra/aks/platform.bicep; then
+            echo "AKS Managed Namespace CPU quotas must use milliCPU notation such as 1000m." >&2
+            exit 1
+          fi
           az bicep build --file infra/app-service/main.bicep --stdout > /dev/null
           az bicep build --file infra/app-service/workload-main.bicep --stdout > /dev/null
           az bicep build --file infra/container-apps/main.bicep --stdout > /dev/null
