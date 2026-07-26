@@ -161,6 +161,10 @@ bootstrap parameter, RBAC boundary, approval gate and validation check.
 
 ## First end-to-end run
 
+Use the copy/paste commands in
+[Deployment strategy commands](docs/deployment-strategy-commands.md) to trigger,
+observe, approve, and verify rolling, canary, and blue/green releases.
+
 Follow this order:
 
 1. Complete the prerequisite checklist and the Azure/GitHub identity bootstrap.
